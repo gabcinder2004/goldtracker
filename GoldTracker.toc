@@ -1,0 +1,8 @@
+## Interface: 11200
+## Title: GoldTracker
+## Notes: Track your gold over time with a clean line chart
+## Author: Player
+## SavedVariables: GoldTrackerDB
+## Version: 1.0.0
+
+GoldTracker.lua
