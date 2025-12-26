@@ -16,6 +16,7 @@ local lastGold = nil
 local yAxisLabels = {}
 local xAxisLabels = {}
 local chartDataPoints = {} -- Stores {x, y, gold, timestamp} for hover detection
+local minimapButton = nil
 
 -- Constants
 local FRAME_WIDTH = 400
@@ -797,6 +798,98 @@ local function ToggleWindow()
     end
 end
 
+-- Minimap button (pfUI compatible)
+local function CreateMinimapButton()
+    if minimapButton then return end
+
+    -- Create button as child of Minimap so pfUI can detect and manage it
+    minimapButton = CreateFrame("Button", "GoldTrackerMinimapButton", Minimap)
+    minimapButton:SetWidth(32)
+    minimapButton:SetHeight(32)
+    minimapButton:SetFrameStrata("MEDIUM")
+    minimapButton:SetFrameLevel(10)
+
+    -- Icon (gold coin)
+    local icon = minimapButton:CreateTexture(nil, "ARTWORK")
+    icon:SetTexture("Interface\\Icons\\INV_Misc_Coin_01")
+    icon:SetWidth(20)
+    icon:SetHeight(20)
+    icon:SetPoint("CENTER", 0, 0)
+
+    -- Border (standard minimap button border)
+    local border = minimapButton:CreateTexture(nil, "OVERLAY")
+    border:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
+    border:SetWidth(53)
+    border:SetHeight(53)
+    border:SetPoint("TOPLEFT", 0, 0)
+
+    -- Highlight
+    minimapButton:SetHighlightTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight")
+
+    -- Load saved position or use default
+    local data = InitCharacterData()
+    local angle = data.minimapPos or 220 -- Default angle (bottom-left area)
+    local radius = 80
+
+    -- Position on minimap edge
+    local x = math.cos(math.rad(angle)) * radius
+    local y = math.sin(math.rad(angle)) * radius
+    minimapButton:SetPoint("CENTER", Minimap, "CENTER", x, y)
+
+    -- Click handler
+    minimapButton:SetScript("OnClick", function()
+        ToggleWindow()
+    end)
+
+    -- Dragging to reposition around minimap
+    minimapButton:RegisterForDrag("LeftButton")
+    minimapButton:SetMovable(true)
+
+    minimapButton:SetScript("OnDragStart", function()
+        this:LockHighlight()
+        this:SetScript("OnUpdate", function()
+            local xpos, ypos = GetCursorPosition()
+            local xmin, ymin = Minimap:GetLeft(), Minimap:GetBottom()
+
+            xpos = xmin - xpos / Minimap:GetEffectiveScale() + 70
+            ypos = ypos / Minimap:GetEffectiveScale() - ymin - 70
+
+            local newAngle = math.deg(math.atan2(ypos, xpos))
+            local newX = math.cos(math.rad(newAngle)) * radius
+            local newY = math.sin(math.rad(newAngle)) * radius
+
+            this:ClearAllPoints()
+            this:SetPoint("CENTER", Minimap, "CENTER", newX, newY)
+
+            -- Save position
+            local charData = InitCharacterData()
+            if charData then
+                charData.minimapPos = newAngle
+            end
+        end)
+    end)
+
+    minimapButton:SetScript("OnDragStop", function()
+        this:UnlockHighlight()
+        this:SetScript("OnUpdate", nil)
+    end)
+
+    -- Tooltip
+    minimapButton:SetScript("OnEnter", function()
+        GameTooltip:SetOwner(this, "ANCHOR_LEFT")
+        GameTooltip:SetText("|cffffd700GoldTracker|r", 1, 1, 1)
+        GameTooltip:AddLine("Left-click to toggle window", 0.2, 1, 0.2)
+        GameTooltip:AddLine("Drag to move button", 0.2, 1, 0.2)
+        GameTooltip:Show()
+    end)
+
+    minimapButton:SetScript("OnLeave", function()
+        GameTooltip:Hide()
+    end)
+
+    minimapButton:Show()
+end
+
 -- Event handling
 GoldTracker:RegisterEvent("VARIABLES_LOADED")
 GoldTracker:RegisterEvent("PLAYER_ENTERING_WORLD")
@@ -818,6 +911,9 @@ GoldTracker:SetScript("OnEvent", function()
         -- Initialize data and record starting point (lastGold is nil so first point will record)
         InitCharacterData()
         RecordGold()
+
+        -- Create minimap button
+        CreateMinimapButton()
 
         DEFAULT_CHAT_FRAME:AddMessage("|cffffd700GoldTracker|r loaded. Use |cff00ff00/gt|r or |cff00ff00/goldtracker|r to toggle.")
 
