@@ -576,10 +576,11 @@ local function CreateMainFrame()
     title:SetText("GoldTracker")
     title:SetTextColor(COLORS.text[1], COLORS.text[2], COLORS.text[3])
 
-    -- Close button (native WoW template)
+    -- Close button
     local closeBtn = CreateFrame("Button", nil, mainFrame, "UIPanelCloseButton")
-    closeBtn:SetPoint("TOPRIGHT", mainFrame, "TOPRIGHT", 5, 5)
-    closeBtn:SetHitRectInsets(6, 6, 6, 6)
+    closeBtn:SetPoint("TOPRIGHT", mainFrame, "TOPRIGHT", 1, 1)
+    closeBtn:SetFrameStrata("HIGH")
+    closeBtn:SetFrameLevel(mainFrame:GetFrameLevel() + 10)
     closeBtn:SetScript("OnClick", function() mainFrame:Hide() end)
 
     -- Dropdown for time range
