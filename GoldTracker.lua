@@ -578,26 +578,35 @@ local function CreateMainFrame()
 
     -- Close button
     local closeBtn = CreateFrame("Button", nil, mainFrame)
-    closeBtn:SetWidth(16)
-    closeBtn:SetHeight(16)
-    closeBtn:SetPoint("TOPRIGHT", mainFrame, "TOPRIGHT", -8, -5)
+    closeBtn:SetWidth(18)
+    closeBtn:SetHeight(18)
+    closeBtn:SetPoint("TOPRIGHT", mainFrame, "TOPRIGHT", -4, -4)
+
+    -- Background
+    local closeBg = closeBtn:CreateTexture(nil, "BACKGROUND")
+    closeBg:SetTexture("Interface\\Buttons\\WHITE8X8")
+    closeBg:SetAllPoints()
+    closeBg:SetVertexColor(0.3, 0.3, 0.3, 0.8)
+
+    -- X text
+    local closeText = closeBtn:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    closeText:SetPoint("CENTER", 0, 0)
+    closeText:SetText("X")
+    closeText:SetTextColor(0.8, 0.8, 0.8, 1)
+
     closeBtn:SetScript("OnClick", function() mainFrame:Hide() end)
-
-    local closeTex = closeBtn:CreateTexture(nil, "ARTWORK")
-    closeTex:SetAllPoints()
-    closeTex:SetTexture("Interface\\Buttons\\UI-StopButton")
-    closeBtn:SetNormalTexture(closeTex)
-
     closeBtn:SetScript("OnEnter", function()
-        closeTex:SetVertexColor(1, 0.3, 0.3, 1)
+        closeBg:SetVertexColor(0.6, 0.2, 0.2, 0.9)
+        closeText:SetTextColor(1, 1, 1, 1)
     end)
     closeBtn:SetScript("OnLeave", function()
-        closeTex:SetVertexColor(1, 1, 1, 1)
+        closeBg:SetVertexColor(0.3, 0.3, 0.3, 0.8)
+        closeText:SetTextColor(0.8, 0.8, 0.8, 1)
     end)
 
     -- Dropdown for time range
     local dropdown = CreateFrame("Frame", "GoldTrackerDropdown", mainFrame, "UIDropDownMenuTemplate")
-    dropdown:SetPoint("TOPRIGHT", mainFrame, "TOPRIGHT", -20, -3)
+    dropdown:SetPoint("TOPRIGHT", mainFrame, "TOPRIGHT", -25, -3)
     UIDropDownMenu_SetWidth(100, dropdown)
 
     local function DropdownInit()
