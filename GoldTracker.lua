@@ -578,7 +578,8 @@ local function CreateMainFrame()
 
     -- Close button (native WoW template)
     local closeBtn = CreateFrame("Button", nil, mainFrame, "UIPanelCloseButton")
-    closeBtn:SetPoint("TOPRIGHT", mainFrame, "TOPRIGHT", 2, 2)
+    closeBtn:SetPoint("TOPRIGHT", mainFrame, "TOPRIGHT", 5, 5)
+    closeBtn:SetHitRectInsets(6, 6, 6, 6)
     closeBtn:SetScript("OnClick", function() mainFrame:Hide() end)
 
     -- Dropdown for time range
