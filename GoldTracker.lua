@@ -15,6 +15,7 @@ local currentRange = "all"
 local lastGold = nil
 local yAxisLabels = {}
 local xAxisLabels = {}
+local chartDataPoints = {} -- Stores {x, y, gold, timestamp} for hover detection
 
 -- Constants
 local FRAME_WIDTH = 400
@@ -41,6 +42,8 @@ local COLORS = {
 
 local RANGES = {
     {key = "session", label = "This Session"},
+    {key = "1day", label = "Last Day"},
+    {key = "3days", label = "Last 3 Days"},
     {key = "7days", label = "Last 7 Days"},
     {key = "30days", label = "Last 30 Days"},
     {key = "all", label = "All Time"},
@@ -102,14 +105,34 @@ local function FormatGoldCompact(copper, showDetail)
     end
 end
 
--- Utility: Format timestamp for axis labels
+-- Utility: Format timestamp for axis labels (12h format with AM/PM)
 local function FormatTimeLabel(timestamp, sameDay)
     local d = date("*t", timestamp)
-    if sameDay then
-        return string.format("%d:%02d", d.hour, d.min)
-    else
-        return string.format("%d/%d %d:%02d", d.month, d.day, d.hour, d.min)
+    local hour = d.hour
+    local ampm = "AM"
+    if hour >= 12 then
+        ampm = "PM"
+        if hour > 12 then hour = hour - 12 end
     end
+    if hour == 0 then hour = 12 end
+    if sameDay then
+        return string.format("%d:%02d %s", hour, d.min, ampm)
+    else
+        return string.format("%d/%d %d:%02d %s", d.month, d.day, hour, d.min, ampm)
+    end
+end
+
+-- Utility: Format timestamp for tooltip (12h format with AM/PM)
+local function FormatTooltipTime(timestamp)
+    local d = date("*t", timestamp)
+    local hour = d.hour
+    local ampm = "AM"
+    if hour >= 12 then
+        ampm = "PM"
+        if hour > 12 then hour = hour - 12 end
+    end
+    if hour == 0 then hour = 12 end
+    return string.format("%d/%d %d:%02d %s", d.month, d.day, hour, d.min, ampm)
 end
 
 -- Check if two timestamps are on the same day
@@ -176,6 +199,10 @@ local function GetFilteredHistory()
 
     if currentRange == "session" then
         cutoff = sessionStart or now
+    elseif currentRange == "1day" then
+        cutoff = now - (1 * 24 * 60 * 60)
+    elseif currentRange == "3days" then
+        cutoff = now - (3 * 24 * 60 * 60)
     elseif currentRange == "7days" then
         cutoff = now - (7 * 24 * 60 * 60)
     elseif currentRange == "30days" then
@@ -268,6 +295,11 @@ function GoldTracker:UpdateChart()
     if not chartFrame then return end
 
     ClearChart()
+
+    -- Clear chart data points for hover
+    for k in pairs(chartDataPoints) do
+        chartDataPoints[k] = nil
+    end
 
     local history = GetFilteredHistory()
     local count = table.getn(history)
@@ -374,15 +406,25 @@ function GoldTracker:UpdateChart()
         xAxisLabels[3]:SetText(FormatTimeLabel(maxTime, sameDay))
     end
 
-    -- Draw lines between points
+    -- Draw lines between points and store data points for hover
     local maxPoints = 150 -- Limit points for performance
     local step = math.max(1, math.floor(count / maxPoints))
     local lastX, lastY = nil, nil
+    local dataPointIndex = 0
 
     for i = 1, count, step do
         local entry = history[i]
         local x = ((entry.timestamp - minTime) / timeRange) * CHART_WIDTH
         local y = ((entry.gold - minGold) / goldRange) * CHART_HEIGHT
+
+        -- Store data point for hover detection
+        dataPointIndex = dataPointIndex + 1
+        chartDataPoints[dataPointIndex] = {
+            x = x,
+            y = y,
+            gold = entry.gold,
+            timestamp = entry.timestamp
+        }
 
         if lastX and lastY then
             DrawLine(lastX, lastY, x, y)
@@ -395,6 +437,15 @@ function GoldTracker:UpdateChart()
         local entry = history[count]
         local x = ((entry.timestamp - minTime) / timeRange) * CHART_WIDTH
         local y = ((entry.gold - minGold) / goldRange) * CHART_HEIGHT
+
+        -- Store the last data point for hover detection
+        dataPointIndex = dataPointIndex + 1
+        chartDataPoints[dataPointIndex] = {
+            x = x,
+            y = y,
+            gold = entry.gold,
+            timestamp = entry.timestamp
+        }
 
         if lastX and lastY then
             DrawLine(lastX, lastY, x, y)
@@ -580,6 +631,76 @@ local function CreateMainFrame()
     chartBg:SetTexture("Interface\\Buttons\\WHITE8X8")
     chartBg:SetAllPoints()
     chartBg:SetVertexColor(0.05, 0.05, 0.05, 0.5)
+
+    -- Enable mouse for hover tooltip
+    chartFrame:EnableMouse(true)
+    chartFrame.isHovering = false
+
+    -- Hover highlight dot
+    chartFrame.hoverDot = chartFrame:CreateTexture(nil, "OVERLAY")
+    chartFrame.hoverDot:SetTexture("Interface\\Buttons\\WHITE8X8")
+    chartFrame.hoverDot:SetWidth(6)
+    chartFrame.hoverDot:SetHeight(6)
+    chartFrame.hoverDot:SetVertexColor(1, 1, 1, 1)
+    chartFrame.hoverDot:Hide()
+
+    chartFrame:SetScript("OnEnter", function()
+        this.isHovering = true
+    end)
+
+    chartFrame:SetScript("OnLeave", function()
+        this.isHovering = false
+        GameTooltip:Hide()
+        this.hoverDot:Hide()
+    end)
+
+    chartFrame:SetScript("OnUpdate", function()
+        if not this.isHovering then return end
+        if table.getn(chartDataPoints) == 0 then return end
+
+        -- Get mouse position relative to chartFrame
+        local mouseX, mouseY = GetCursorPosition()
+        local scale = this:GetEffectiveScale()
+        mouseX = mouseX / scale
+        mouseY = mouseY / scale
+
+        local frameLeft = this:GetLeft()
+        local frameBottom = this:GetBottom()
+        local relX = mouseX - frameLeft
+        local relY = mouseY - frameBottom
+
+        -- Find the nearest data point
+        local nearestDist = 99999
+        local nearestPoint = nil
+        for i = 1, table.getn(chartDataPoints) do
+            local point = chartDataPoints[i]
+            local dx = point.x - relX
+            local dy = point.y - relY
+            local dist = math.sqrt(dx * dx + dy * dy)
+            if dist < nearestDist then
+                nearestDist = dist
+                nearestPoint = point
+            end
+        end
+
+        -- Show tooltip if within 30 pixels of a data point
+        if nearestPoint and nearestDist < 30 then
+            -- Position the hover dot
+            this.hoverDot:ClearAllPoints()
+            this.hoverDot:SetPoint("CENTER", this, "BOTTOMLEFT", nearestPoint.x, nearestPoint.y)
+            this.hoverDot:Show()
+
+            -- Show tooltip
+            GameTooltip:SetOwner(this, "ANCHOR_CURSOR")
+            GameTooltip:ClearLines()
+            GameTooltip:AddLine(FormatGold(nearestPoint.gold), COLORS.gold[1], COLORS.gold[2], COLORS.gold[3])
+            GameTooltip:AddLine(FormatTooltipTime(nearestPoint.timestamp), 0.7, 0.7, 0.7)
+            GameTooltip:Show()
+        else
+            GameTooltip:Hide()
+            this.hoverDot:Hide()
+        end
+    end)
 
     -- Draw subtle grid lines and Y-axis labels
     local gridCount = 4
