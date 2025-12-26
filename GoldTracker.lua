@@ -137,10 +137,20 @@ local function RecordGold()
     local data = InitCharacterData()
     if not data then return end
 
+    -- Skip recording while dead/ghost (GetMoney() returns 0 in spirit form)
+    if UnitIsDeadOrGhost("player") then
+        return
+    end
+
     local currentGold = GetMoney()
 
     -- Skip if gold hasn't changed
     if lastGold and currentGold == lastGold then
+        return
+    end
+
+    -- Skip recording 0 gold if we previously had non-zero gold (prevents logout bug)
+    if currentGold == 0 and lastGold and lastGold > 0 then
         return
     end
 
@@ -670,7 +680,6 @@ end
 GoldTracker:RegisterEvent("VARIABLES_LOADED")
 GoldTracker:RegisterEvent("PLAYER_ENTERING_WORLD")
 GoldTracker:RegisterEvent("PLAYER_MONEY")
-GoldTracker:RegisterEvent("PLAYER_LOGOUT")
 
 GoldTracker:SetScript("OnEvent", function()
     if event == "VARIABLES_LOADED" then
@@ -692,9 +701,6 @@ GoldTracker:SetScript("OnEvent", function()
         DEFAULT_CHAT_FRAME:AddMessage("|cffffd700GoldTracker|r loaded. Use |cff00ff00/gt|r or |cff00ff00/goldtracker|r to toggle.")
 
     elseif event == "PLAYER_MONEY" then
-        RecordGold()
-
-    elseif event == "PLAYER_LOGOUT" then
         RecordGold()
     end
 end)
