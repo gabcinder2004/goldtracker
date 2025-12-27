@@ -106,8 +106,8 @@ local function FormatGoldCompact(copper, showDetail)
     end
 end
 
--- Utility: Format timestamp for axis labels (12h format with AM/PM)
-local function FormatTimeLabel(timestamp, sameDay)
+-- Utility: Format timestamp for axis labels based on time range
+local function FormatTimeLabel(timestamp, sameDay, timeRange)
     local d = date("*t", timestamp)
     local hour = d.hour
     local ampm = "AM"
@@ -116,10 +116,21 @@ local function FormatTimeLabel(timestamp, sameDay)
         if hour > 12 then hour = hour - 12 end
     end
     if hour == 0 then hour = 12 end
-    if sameDay then
-        return string.format("%d:%02d %s", hour, d.min, ampm)
+
+    -- For short ranges (< 3 hours), show hour:min
+    if timeRange and timeRange < 3 * 60 * 60 then
+        if sameDay then
+            return string.format("%d:%02d %s", hour, d.min, ampm)
+        else
+            return string.format("%d/%d %d:%02d %s", d.month, d.day, hour, d.min, ampm)
+        end
     else
-        return string.format("%d/%d %d:%02d %s", d.month, d.day, hour, d.min, ampm)
+        -- For longer ranges, just show the hour
+        if sameDay then
+            return string.format("%d %s", hour, ampm)
+        else
+            return string.format("%d/%d %d %s", d.month, d.day, hour, ampm)
+        end
     end
 end
 
@@ -397,14 +408,14 @@ function GoldTracker:UpdateChart()
     -- Show time if all data is from the same day, otherwise show date
     local sameDay = IsSameDay(minTime, maxTime)
     if xAxisLabels[1] then
-        xAxisLabels[1]:SetText(FormatTimeLabel(minTime, sameDay))
+        xAxisLabels[1]:SetText(FormatTimeLabel(minTime, sameDay, timeRange))
     end
     if xAxisLabels[2] then
         local midTime = minTime + (timeRange / 2)
-        xAxisLabels[2]:SetText(FormatTimeLabel(midTime, sameDay))
+        xAxisLabels[2]:SetText(FormatTimeLabel(midTime, sameDay, timeRange))
     end
     if xAxisLabels[3] then
-        xAxisLabels[3]:SetText(FormatTimeLabel(maxTime, sameDay))
+        xAxisLabels[3]:SetText(FormatTimeLabel(maxTime, sameDay, timeRange))
     end
 
     -- Draw lines between points and store data points for hover
@@ -713,16 +724,30 @@ local function CreateMainFrame()
         table.insert(yAxisLabels, yLabel)
     end
 
-    -- X-axis labels (start, middle, end)
+    -- X-axis labels (start, middle, end) with tick marks
     for i = 1, 3 do
-        local xLabel = mainFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-        local xPos = 0
+        -- Tick mark
+        local tick = chartFrame:CreateTexture(nil, "OVERLAY")
+        tick:SetTexture("Interface\\Buttons\\WHITE8X8")
+        tick:SetWidth(1)
+        tick:SetHeight(5)
+        tick:SetVertexColor(0.6, 0.6, 0.6, 1)
         if i == 1 then
-            xLabel:SetPoint("TOPLEFT", chartFrame, "BOTTOMLEFT", 0, -3)
+            tick:SetPoint("TOPLEFT", chartFrame, "BOTTOMLEFT", 0, 0)
         elseif i == 2 then
-            xLabel:SetPoint("TOP", chartFrame, "BOTTOM", 0, -3)
+            tick:SetPoint("TOP", chartFrame, "BOTTOM", 0, 0)
         else
-            xLabel:SetPoint("TOPRIGHT", chartFrame, "BOTTOMRIGHT", 0, -3)
+            tick:SetPoint("TOPRIGHT", chartFrame, "BOTTOMRIGHT", 0, 0)
+        end
+
+        -- Label
+        local xLabel = mainFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        if i == 1 then
+            xLabel:SetPoint("TOPLEFT", chartFrame, "BOTTOMLEFT", 0, -6)
+        elseif i == 2 then
+            xLabel:SetPoint("TOP", chartFrame, "BOTTOM", 0, -6)
+        else
+            xLabel:SetPoint("TOPRIGHT", chartFrame, "BOTTOMRIGHT", 0, -6)
         end
         xLabel:SetTextColor(0.6, 0.6, 0.6, 1)
         xLabel:SetText("")
