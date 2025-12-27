@@ -12,6 +12,12 @@ local gridLines = {}
 local sessionStart = nil
 local sessionStartGold = nil
 local currentRange = "all"
+local currentTab = "chart"  -- "chart" or "transactions"
+local transactionContext = nil  -- Current context for source detection
+local activeFilters = {}  -- Which sources are visible
+local currentPage = 1
+local transactionsFrame = nil
+local tabButtons = {}
 local lastGold = nil
 local yAxisLabels = {}
 local xAxisLabels = {}
@@ -40,6 +46,22 @@ local COLORS = {
     positive = {0.2, 0.8, 0.2, 1},
     negative = {0.8, 0.2, 0.2, 1},
 }
+
+local SOURCES = {
+    {key = "all", label = "All", icon = "Interface\\Buttons\\UI-CheckBox-Check"},
+    {key = "loot", label = "Loot", icon = "Interface\\Icons\\INV_Misc_Coin_17"},
+    {key = "vendor", label = "Vendor", icon = "Interface\\Icons\\INV_Misc_Bag_10"},
+    {key = "auction", label = "Auction", icon = "Interface\\Icons\\INV_Hammer_15"},
+    {key = "mail", label = "Mail", icon = "Interface\\Icons\\INV_Letter_15"},
+    {key = "trade", label = "Trade", icon = "Interface\\Icons\\INV_Misc_Note_01"},
+    {key = "quest", label = "Quest", icon = "Interface\\Icons\\INV_Misc_Note_05"},
+    {key = "training", label = "Training", icon = "Interface\\Icons\\INV_Misc_Book_07"},
+    {key = "repair", label = "Repair", icon = "Interface\\Icons\\Trade_BlackSmithing"},
+    {key = "unknown", label = "Unknown", icon = "Interface\\Icons\\INV_Misc_QuestionMark"},
+    {key = "historical", label = "Historical", icon = "Interface\\Icons\\INV_Misc_PocketWatch_01"},
+}
+
+local TRANSACTIONS_PER_PAGE = 15
 
 local RANGES = {
     {key = "session", label = "This Session"},
