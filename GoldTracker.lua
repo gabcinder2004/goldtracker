@@ -300,6 +300,122 @@ local function GetFilteredHistory()
     return filtered
 end
 
+-- Transactions: Get filtered transaction list
+function GoldTracker:GetFilteredTransactions()
+    local data = InitCharacterData()
+    if not data or not data.transactions then return {} end
+
+    local now = time()
+    local cutoff = 0
+
+    -- Apply time range filter (same as chart)
+    if currentRange == "session" then
+        cutoff = sessionStart or now
+    elseif currentRange == "1day" then
+        cutoff = now - (1 * 24 * 60 * 60)
+    elseif currentRange == "3days" then
+        cutoff = now - (3 * 24 * 60 * 60)
+    elseif currentRange == "7days" then
+        cutoff = now - (7 * 24 * 60 * 60)
+    elseif currentRange == "30days" then
+        cutoff = now - (30 * 24 * 60 * 60)
+    else
+        cutoff = 0
+    end
+
+    local filtered = {}
+    for i = table.getn(data.transactions), 1, -1 do  -- Reverse order (newest first)
+        local tx = data.transactions[i]
+        if tx.timestamp >= cutoff and activeFilters[tx.source] then
+            table.insert(filtered, tx)
+        end
+    end
+
+    return filtered
+end
+
+-- Transactions: Format time for table display
+local function FormatTableTime(timestamp)
+    local d = date("*t", timestamp)
+    local hour = d.hour
+    local ampm = "a"
+    if hour >= 12 then
+        ampm = "p"
+        if hour > 12 then hour = hour - 12 end
+    end
+    if hour == 0 then hour = 12 end
+    return string.format("%d/%d %d:%02d%s", d.month, d.day, hour, d.min, ampm)
+end
+
+-- Transactions: Update the transaction list display
+function GoldTracker:UpdateTransactionList()
+    if not transactionsFrame then return end
+
+    local filtered = self:GetFilteredTransactions()
+    local totalCount = table.getn(filtered)
+    local totalPages = math.max(1, math.ceil(totalCount / TRANSACTIONS_PER_PAGE))
+
+    -- Clamp current page
+    if currentPage > totalPages then currentPage = totalPages end
+    if currentPage < 1 then currentPage = 1 end
+
+    -- Update page text
+    transactionsFrame.pageText:SetText("Page " .. currentPage .. " of " .. totalPages)
+
+    -- Update button states
+    if currentPage <= 1 then
+        transactionsFrame.prevBtn.text:SetTextColor(0.4, 0.4, 0.4, 1)
+    else
+        transactionsFrame.prevBtn.text:SetTextColor(1, 1, 1, 1)
+    end
+
+    if currentPage >= totalPages then
+        transactionsFrame.nextBtn.text:SetTextColor(0.4, 0.4, 0.4, 1)
+    else
+        transactionsFrame.nextBtn.text:SetTextColor(1, 1, 1, 1)
+    end
+
+    -- Calculate page range
+    local startIdx = ((currentPage - 1) * TRANSACTIONS_PER_PAGE) + 1
+    local endIdx = math.min(startIdx + TRANSACTIONS_PER_PAGE - 1, totalCount)
+
+    -- Populate rows
+    for i = 1, TRANSACTIONS_PER_PAGE do
+        local row = transactionsFrame.rows[i]
+        local txIdx = startIdx + i - 1
+
+        if txIdx <= totalCount then
+            local tx = filtered[txIdx]
+
+            -- Time
+            row.time:SetText(FormatTableTime(tx.timestamp))
+
+            -- Amount (colored)
+            local amountStr = FormatGold(math.abs(tx.amount))
+            if tx.amount >= 0 then
+                row.amount:SetText("+" .. amountStr)
+                row.amount:SetTextColor(COLORS.positive[1], COLORS.positive[2], COLORS.positive[3], 1)
+            else
+                row.amount:SetText("-" .. amountStr)
+                row.amount:SetTextColor(COLORS.negative[1], COLORS.negative[2], COLORS.negative[3], 1)
+            end
+
+            -- Source (capitalize first letter)
+            local sourceText = tx.source
+            sourceText = string.upper(string.sub(sourceText, 1, 1)) .. string.sub(sourceText, 2)
+            row.source:SetText(sourceText)
+
+            -- Balance
+            row.balance:SetText(FormatGoldCompact(tx.balance, false))
+            row.balance:SetTextColor(COLORS.gold[1], COLORS.gold[2], COLORS.gold[3], 1)
+
+            row:Show()
+        else
+            row:Hide()
+        end
+    end
+end
+
 -- Chart: Draw line between two points using small segments
 local lineSegmentIndex = 0
 local lineSegments = {}
