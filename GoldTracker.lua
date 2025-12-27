@@ -1098,6 +1098,82 @@ local function CreateMainFrame()
     tableBg:SetAllPoints()
     tableBg:SetVertexColor(0.05, 0.05, 0.05, 0.5)
 
+    -- Table column headers
+    local headerY = 0
+    local colWidths = {90, 85, 70, 85}  -- Time, Amount, Source, Balance
+    local colNames = {"Time", "Amount", "Source", "Balance"}
+    local colPositions = {0, 90, 175, 245}
+
+    transactionsFrame.headers = {}
+    for i, name in ipairs(colNames) do
+        local header = transactionsFrame.tableFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        header:SetPoint("TOPLEFT", transactionsFrame.tableFrame, "TOPLEFT", colPositions[i], 0)
+        header:SetWidth(colWidths[i])
+        header:SetJustifyH("LEFT")
+        header:SetText(name)
+        header:SetTextColor(0.8, 0.8, 0.8, 1)
+        transactionsFrame.headers[i] = header
+    end
+
+    -- Header underline
+    local headerLine = transactionsFrame.tableFrame:CreateTexture(nil, "ARTWORK")
+    headerLine:SetTexture("Interface\\Buttons\\WHITE8X8")
+    headerLine:SetHeight(1)
+    headerLine:SetPoint("TOPLEFT", transactionsFrame.tableFrame, "TOPLEFT", 0, -14)
+    headerLine:SetPoint("TOPRIGHT", transactionsFrame.tableFrame, "TOPRIGHT", 0, -14)
+    headerLine:SetVertexColor(0.3, 0.3, 0.3, 1)
+
+    -- Create row frames
+    transactionsFrame.rows = {}
+    local rowHeight = 14
+    local rowStartY = -18
+
+    for i = 1, TRANSACTIONS_PER_PAGE do
+        local row = {}
+        local y = rowStartY - ((i - 1) * rowHeight)
+
+        -- Time column
+        row.time = transactionsFrame.tableFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        row.time:SetPoint("TOPLEFT", transactionsFrame.tableFrame, "TOPLEFT", colPositions[1], y)
+        row.time:SetWidth(colWidths[1])
+        row.time:SetJustifyH("LEFT")
+        row.time:SetTextColor(0.7, 0.7, 0.7, 1)
+
+        -- Amount column
+        row.amount = transactionsFrame.tableFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        row.amount:SetPoint("TOPLEFT", transactionsFrame.tableFrame, "TOPLEFT", colPositions[2], y)
+        row.amount:SetWidth(colWidths[2])
+        row.amount:SetJustifyH("LEFT")
+
+        -- Source column
+        row.source = transactionsFrame.tableFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        row.source:SetPoint("TOPLEFT", transactionsFrame.tableFrame, "TOPLEFT", colPositions[3], y)
+        row.source:SetWidth(colWidths[3])
+        row.source:SetJustifyH("LEFT")
+        row.source:SetTextColor(0.6, 0.6, 0.6, 1)
+
+        -- Balance column
+        row.balance = transactionsFrame.tableFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        row.balance:SetPoint("TOPLEFT", transactionsFrame.tableFrame, "TOPLEFT", colPositions[4], y)
+        row.balance:SetWidth(colWidths[4])
+        row.balance:SetJustifyH("LEFT")
+
+        row.Show = function(self)
+            self.time:Show()
+            self.amount:Show()
+            self.source:Show()
+            self.balance:Show()
+        end
+
+        row.Hide = function(self)
+            self.time:Hide()
+            self.amount:Hide()
+            self.source:Hide()
+            self.balance:Hide()
+        end
+
+        transactionsFrame.rows[i] = row
+    end
     -- Pagination container
     transactionsFrame.pagination = CreateFrame("Frame", nil, transactionsFrame)
     transactionsFrame.pagination:SetPoint("BOTTOMLEFT", transactionsFrame, "BOTTOMLEFT", 0, 0)
