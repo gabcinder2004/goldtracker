@@ -26,13 +26,14 @@ local minimapButton = nil
 
 -- Constants
 local FRAME_WIDTH = 400
-local FRAME_HEIGHT = 260
+local FRAME_HEIGHT = 280  -- Increased for tabs
 local CHART_PADDING_LEFT = 55
 local CHART_PADDING_RIGHT = 15
-local CHART_TOP_OFFSET = 35
+local CHART_TOP_OFFSET = 55  -- Increased for tab bar
 local CHART_BOTTOM_OFFSET = 70
 local CHART_WIDTH = FRAME_WIDTH - CHART_PADDING_LEFT - CHART_PADDING_RIGHT
 local CHART_HEIGHT = FRAME_HEIGHT - CHART_TOP_OFFSET - CHART_BOTTOM_OFFSET
+local TAB_BAR_HEIGHT = 22
 
 local COLORS = {
     background = {0, 0, 0, 0.75},
@@ -661,6 +662,36 @@ local function CreateTabButton(parent, text, tabKey, xOffset)
     return tab
 end
 
+-- UI: Switch between tabs
+local function SwitchTab(tabKey)
+    currentTab = tabKey
+
+    -- Update tab visuals
+    for key, tab in pairs(tabButtons) do
+        tab:SetActive(key == tabKey)
+    end
+
+    -- Show/hide content
+    if chartFrame then
+        if tabKey == "chart" then
+            chartFrame:Show()
+            if statsFrame then statsFrame:Show() end
+        else
+            chartFrame:Hide()
+            if statsFrame then statsFrame:Hide() end
+        end
+    end
+
+    if transactionsFrame then
+        if tabKey == "transactions" then
+            transactionsFrame:Show()
+            GoldTracker:UpdateTransactionList()
+        else
+            transactionsFrame:Hide()
+        end
+    end
+end
+
 -- UI: Create main frame
 local function CreateMainFrame()
     if mainFrame then return mainFrame end
@@ -755,6 +786,30 @@ local function CreateMainFrame()
 
     -- Set initial dropdown text
     GoldTrackerDropdownText:SetText("All Time")
+
+    -- Tab bar separator line
+    local tabSeparator = mainFrame:CreateTexture(nil, "ARTWORK")
+    tabSeparator:SetTexture("Interface\\Buttons\\WHITE8X8")
+    tabSeparator:SetHeight(1)
+    tabSeparator:SetPoint("TOPLEFT", mainFrame, "TOPLEFT", 0, -25 - TAB_BAR_HEIGHT)
+    tabSeparator:SetPoint("TOPRIGHT", mainFrame, "TOPRIGHT", 0, -25 - TAB_BAR_HEIGHT)
+    tabSeparator:SetVertexColor(COLORS.border[1], COLORS.border[2], COLORS.border[3], 0.5)
+
+    -- Tab buttons
+    tabButtons.chart = CreateTabButton(mainFrame, "Chart", "chart", 10)
+    tabButtons.transactions = CreateTabButton(mainFrame, "Transactions", "transactions", 92)
+
+    -- Tab click handlers
+    tabButtons.chart:SetScript("OnClick", function()
+        SwitchTab("chart")
+    end)
+    tabButtons.transactions:SetScript("OnClick", function()
+        SwitchTab("transactions")
+    end)
+
+    -- Set initial tab state
+    tabButtons.chart:SetActive(true)
+    tabButtons.transactions:SetActive(false)
 
     -- Chart frame (inner area for chart)
     chartFrame = CreateFrame("Frame", nil, mainFrame)
