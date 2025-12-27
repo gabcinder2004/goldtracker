@@ -407,8 +407,13 @@ function GoldTracker:UpdateTransactionList()
             sourceText = string.upper(string.sub(sourceText, 1, 1)) .. string.sub(sourceText, 2)
             row.source:SetText(sourceText)
 
-            -- Detail (NPC name, player name, quest name, etc.)
-            row.detail:SetText(tx.detail or "")
+            -- Detail (NPC name, player name, quest name, etc.) - truncate for display
+            local detailText = tx.detail or ""
+            row.detailFull = detailText
+            if string.len(detailText) > 14 then
+                detailText = string.sub(detailText, 1, 12) .. ".."
+            end
+            row.detail:SetText(detailText)
 
             -- Balance
             row.balance:SetText(FormatGoldCompact(tx.balance, false))
@@ -1263,12 +1268,31 @@ local function CreateMainFrame()
         row.source:SetJustifyH("LEFT")
         row.source:SetTextColor(0.6, 0.6, 0.6, 1)
 
-        -- Detail column
+        -- Detail column with tooltip hover
         row.detail = transactionsFrame.tableFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
         row.detail:SetPoint("TOPLEFT", transactionsFrame.tableFrame, "TOPLEFT", colPositions[4], y)
         row.detail:SetWidth(colWidths[4])
+        row.detail:SetHeight(rowHeight)
         row.detail:SetJustifyH("LEFT")
         row.detail:SetTextColor(0.6, 0.6, 0.6, 1)
+        row.detailFull = nil  -- Store full text for tooltip
+
+        -- Hover frame for detail tooltip
+        row.detailHover = CreateFrame("Button", nil, transactionsFrame.tableFrame)
+        row.detailHover:SetPoint("TOPLEFT", transactionsFrame.tableFrame, "TOPLEFT", colPositions[4], y)
+        row.detailHover:SetWidth(colWidths[4])
+        row.detailHover:SetHeight(rowHeight)
+        row.detailHover.row = row
+        row.detailHover:SetScript("OnEnter", function()
+            if this.row.detailFull and this.row.detailFull ~= "" then
+                GameTooltip:SetOwner(this, "ANCHOR_CURSOR")
+                GameTooltip:SetText(this.row.detailFull, 1, 1, 1)
+                GameTooltip:Show()
+            end
+        end)
+        row.detailHover:SetScript("OnLeave", function()
+            GameTooltip:Hide()
+        end)
 
         -- Balance column
         row.balance = transactionsFrame.tableFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
@@ -1281,6 +1305,7 @@ local function CreateMainFrame()
             self.amount:Show()
             self.source:Show()
             self.detail:Show()
+            self.detailHover:Show()
             self.balance:Show()
         end
 
@@ -1289,6 +1314,7 @@ local function CreateMainFrame()
             self.amount:Hide()
             self.source:Hide()
             self.detail:Hide()
+            self.detailHover:Hide()
             self.balance:Hide()
         end
 
