@@ -27,10 +27,15 @@ local yAxisLabels = {}
 local xAxisLabels = {}
 local chartDataPoints = {} -- Stores {x, y, gold, timestamp} for hover detection
 local minimapButton = nil
+local miniFrame = nil
+local miniLineTextures = {}
+local isMinimized = false
 
 -- Constants
 local FRAME_WIDTH = 450
 local FRAME_HEIGHT = 280  -- Increased for tabs
+local MINI_WIDTH = 150
+local MINI_HEIGHT = 60
 local CHART_PADDING_LEFT = 55
 local CHART_PADDING_RIGHT = 15
 local CHART_TOP_OFFSET = 55  -- Increased for tab bar
@@ -326,6 +331,11 @@ local function RecordGold()
     -- Update chart if visible
     if mainFrame and mainFrame:IsVisible() then
         GoldTracker:UpdateChart()
+    end
+
+    -- Update mini chart if visible
+    if miniFrame and miniFrame:IsVisible() then
+        GoldTracker:UpdateMiniChart()
     end
 end
 
@@ -946,14 +956,55 @@ local function CreateMainFrame()
     title:SetText("GoldTracker")
     title:SetTextColor(COLORS.text[1], COLORS.text[2], COLORS.text[3])
 
-    -- Close button (inherits strata from parent)
-    local closeBtn = CreateFrame("Button", nil, mainFrame, "UIPanelCloseButton")
-    closeBtn:SetPoint("TOPRIGHT", mainFrame, "TOPRIGHT", 1, 1)
+    -- Close button with custom icon
+    local closeBtn = CreateFrame("Button", nil, mainFrame)
+    closeBtn:SetWidth(16)
+    closeBtn:SetHeight(16)
+    closeBtn:SetPoint("TOPRIGHT", mainFrame, "TOPRIGHT", -5, -5)
+    closeBtn:SetFrameLevel(mainFrame:GetFrameLevel() + 5)
+    closeBtn:EnableMouse(true)
+    closeBtn:RegisterForClicks("LeftButtonUp")
+
+    closeBtn.icon = closeBtn:CreateTexture(nil, "ARTWORK")
+    closeBtn.icon:SetTexture("Interface\\AddOns\\GoldTracker\\images\\yellow_close_x_icon")
+    closeBtn.icon:SetAllPoints()
+    closeBtn.icon:SetVertexColor(0.8, 0.8, 0.8, 0.8)
+
     closeBtn:SetScript("OnClick", function() mainFrame:Hide() end)
+    closeBtn:SetScript("OnEnter", function()
+        this.icon:SetVertexColor(1, 0.843, 0, 1)
+    end)
+    closeBtn:SetScript("OnLeave", function()
+        this.icon:SetVertexColor(0.8, 0.8, 0.8, 0.8)
+    end)
+
+    -- Minimize button with custom icon
+    local minimizeBtn = CreateFrame("Button", nil, mainFrame)
+    minimizeBtn:SetWidth(16)
+    minimizeBtn:SetHeight(16)
+    minimizeBtn:SetPoint("RIGHT", closeBtn, "LEFT", -4, 0)
+    minimizeBtn:SetFrameLevel(mainFrame:GetFrameLevel() + 5)
+    minimizeBtn:EnableMouse(true)
+    minimizeBtn:RegisterForClicks("LeftButtonUp")
+
+    minimizeBtn.icon = minimizeBtn:CreateTexture(nil, "ARTWORK")
+    minimizeBtn.icon:SetTexture("Interface\\AddOns\\GoldTracker\\images\\yellow_minimize_icon_ui")
+    minimizeBtn.icon:SetAllPoints()
+    minimizeBtn.icon:SetVertexColor(0.8, 0.8, 0.8, 0.8)
+
+    minimizeBtn:SetScript("OnClick", function()
+        GoldTracker:MinimizeWindow()
+    end)
+    minimizeBtn:SetScript("OnEnter", function()
+        this.icon:SetVertexColor(1, 0.843, 0, 1)
+    end)
+    minimizeBtn:SetScript("OnLeave", function()
+        this.icon:SetVertexColor(0.8, 0.8, 0.8, 0.8)
+    end)
 
     -- Dropdown for time range
     local dropdown = CreateFrame("Frame", "GoldTrackerDropdown", mainFrame, "UIDropDownMenuTemplate")
-    dropdown:SetPoint("TOPRIGHT", mainFrame, "TOPRIGHT", -25, -3)
+    dropdown:SetPoint("TOPRIGHT", mainFrame, "TOPRIGHT", -45, -3)
     UIDropDownMenu_SetWidth(100, dropdown)
 
     local function DropdownInit()
@@ -1505,6 +1556,221 @@ local function ToggleWindow()
         mainFrame:Show()
         GoldTracker:UpdateChart()
     end
+end
+
+-- Create mini chart frame
+local function CreateMiniFrame()
+    if miniFrame then return miniFrame end
+
+    miniFrame = CreateFrame("Frame", "GoldTrackerMiniFrame", UIParent)
+    miniFrame:SetWidth(MINI_WIDTH)
+    miniFrame:SetHeight(MINI_HEIGHT)
+    miniFrame:SetPoint("TOPRIGHT", UIParent, "TOPRIGHT", -20, -100)
+    miniFrame:SetMovable(true)
+    miniFrame:EnableMouse(true)
+    miniFrame:SetClampedToScreen(true)
+    miniFrame:SetFrameStrata("MEDIUM")
+    miniFrame:SetAlpha(0.75)
+
+    -- Background
+    local bg = miniFrame:CreateTexture(nil, "BACKGROUND")
+    bg:SetTexture("Interface\\Buttons\\WHITE8X8")
+    bg:SetAllPoints()
+    bg:SetVertexColor(0, 0, 0, 0.85)
+
+    -- Border
+    local border = CreateFrame("Frame", nil, miniFrame)
+    border:SetPoint("TOPLEFT", -1, 1)
+    border:SetPoint("BOTTOMRIGHT", 1, -1)
+    border:SetBackdrop({
+        edgeFile = "Interface\\Buttons\\WHITE8X8",
+        edgeSize = 1,
+    })
+    border:SetBackdropBorderColor(COLORS.border[1], COLORS.border[2], COLORS.border[3], 0.6)
+
+    -- Chart area
+    miniFrame.chartArea = CreateFrame("Frame", nil, miniFrame)
+    miniFrame.chartArea:SetPoint("TOPLEFT", miniFrame, "TOPLEFT", 5, -18)
+    miniFrame.chartArea:SetPoint("BOTTOMRIGHT", miniFrame, "BOTTOMRIGHT", -5, 5)
+
+    -- Title
+    local title = miniFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    title:SetPoint("TOPLEFT", miniFrame, "TOPLEFT", 5, -4)
+    title:SetText("GoldTracker")
+    title:SetTextColor(COLORS.gold[1], COLORS.gold[2], COLORS.gold[3], 0.8)
+
+    -- Current gold display
+    miniFrame.goldText = miniFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    miniFrame.goldText:SetPoint("TOPRIGHT", miniFrame, "TOPRIGHT", -18, -4)
+    miniFrame.goldText:SetTextColor(1, 1, 1, 0.9)
+
+    -- Restore button (small X to expand back)
+    local restoreBtn = CreateFrame("Button", nil, miniFrame)
+    restoreBtn:SetWidth(12)
+    restoreBtn:SetHeight(12)
+    restoreBtn:SetPoint("TOPRIGHT", miniFrame, "TOPRIGHT", -3, -3)
+    restoreBtn.text = restoreBtn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    restoreBtn.text:SetPoint("CENTER", 0, 0)
+    restoreBtn.text:SetText("+")
+    restoreBtn.text:SetTextColor(0.7, 0.7, 0.7, 1)
+    restoreBtn:SetScript("OnClick", function()
+        GoldTracker:RestoreWindow()
+    end)
+    restoreBtn:SetScript("OnEnter", function()
+        this.text:SetTextColor(1, 0.843, 0, 1)
+    end)
+    restoreBtn:SetScript("OnLeave", function()
+        this.text:SetTextColor(0.7, 0.7, 0.7, 1)
+    end)
+
+    -- Make draggable
+    miniFrame:SetScript("OnMouseDown", function()
+        if arg1 == "LeftButton" then
+            this:StartMoving()
+        end
+    end)
+    miniFrame:SetScript("OnMouseUp", function()
+        this:StopMovingOrSizing()
+        -- Save position
+        local data = InitCharacterData()
+        local point, _, relPoint, x, y = this:GetPoint()
+        data.miniFramePos = {point, relPoint, x, y}
+    end)
+
+    miniFrame:Hide()
+    return miniFrame
+end
+
+-- Update mini chart
+local miniSegmentIndex = 0
+
+local function DrawMiniSegment(x, y)
+    miniSegmentIndex = miniSegmentIndex + 1
+    local tex = miniLineTextures[miniSegmentIndex]
+    if not tex then
+        tex = miniFrame.chartArea:CreateTexture(nil, "ARTWORK")
+        tex:SetTexture("Interface\\Buttons\\WHITE8X8")
+        tex:SetWidth(1.5)
+        tex:SetHeight(1.5)
+        miniLineTextures[miniSegmentIndex] = tex
+    end
+    tex:ClearAllPoints()
+    tex:SetPoint("CENTER", miniFrame.chartArea, "BOTTOMLEFT", x, y)
+    tex:SetVertexColor(COLORS.line[1], COLORS.line[2], COLORS.line[3], 0.9)
+    tex:Show()
+end
+
+local function DrawMiniLine(x1, y1, x2, y2)
+    local dx = x2 - x1
+    local dy = y2 - y1
+    local length = math.sqrt(dx * dx + dy * dy)
+    local steps = math.max(math.floor(length), 1)
+    for i = 0, steps do
+        local t = i / steps
+        local x = x1 + dx * t
+        local y = y1 + dy * t
+        DrawMiniSegment(x, y)
+    end
+end
+
+function GoldTracker:UpdateMiniChart()
+    if not miniFrame or not miniFrame:IsVisible() then return end
+
+    -- Update gold text
+    local currentGold = GetMoney()
+    local gold = math.floor(currentGold / 10000)
+    miniFrame.goldText:SetText(gold .. "g")
+
+    -- Clear old lines
+    for i, tex in ipairs(miniLineTextures) do
+        tex:Hide()
+    end
+    miniSegmentIndex = 0
+
+    -- Get history data
+    local data = InitCharacterData()
+    if not data then return end
+    local history = GetFilteredHistory()
+    local count = table.getn(history)
+    if count < 2 then return end
+
+    -- Calculate bounds
+    local minGold, maxGold = history[1].gold, history[1].gold
+    local minTime, maxTime = history[1].timestamp, history[count].timestamp
+
+    for i, entry in ipairs(history) do
+        if entry.gold < minGold then minGold = entry.gold end
+        if entry.gold > maxGold then maxGold = entry.gold end
+    end
+
+    local goldRange = maxGold - minGold
+    if goldRange == 0 then goldRange = 1 end
+    local timeRange = maxTime - minTime
+    if timeRange == 0 then timeRange = 1 end
+
+    -- Add padding
+    local padding = goldRange * 0.1
+    minGold = minGold - padding
+    maxGold = maxGold + padding
+    goldRange = maxGold - minGold
+
+    -- Chart dimensions
+    local chartWidth = MINI_WIDTH - 10
+    local chartHeight = MINI_HEIGHT - 23
+
+    -- Draw lines
+    local maxPoints = 30
+    local step = math.max(1, math.floor(count / maxPoints))
+    local lastX, lastY = nil, nil
+
+    for i = 1, count, step do
+        local entry = history[i]
+        local x = ((entry.timestamp - minTime) / timeRange) * chartWidth
+        local y = ((entry.gold - minGold) / goldRange) * chartHeight
+
+        if lastX then
+            DrawMiniLine(lastX, lastY, x, y)
+        end
+
+        lastX, lastY = x, y
+    end
+end
+
+-- Minimize window
+function GoldTracker:MinimizeWindow()
+    if not miniFrame then
+        CreateMiniFrame()
+    end
+
+    -- Restore mini frame position
+    local data = InitCharacterData()
+    if data.miniFramePos then
+        miniFrame:ClearAllPoints()
+        miniFrame:SetPoint(data.miniFramePos[1], UIParent, data.miniFramePos[2], data.miniFramePos[3], data.miniFramePos[4])
+    end
+
+    mainFrame:Hide()
+    miniFrame:Show()
+    isMinimized = true
+    GoldTracker:UpdateMiniChart()
+end
+
+-- Restore window from minimized
+function GoldTracker:RestoreWindow()
+    if miniFrame then
+        miniFrame:Hide()
+    end
+
+    -- Restore main frame position
+    local data = InitCharacterData()
+    if data.framePos then
+        mainFrame:ClearAllPoints()
+        mainFrame:SetPoint(data.framePos[1], UIParent, data.framePos[2], data.framePos[3], data.framePos[4])
+    end
+
+    mainFrame:Show()
+    isMinimized = false
+    GoldTracker:UpdateChart()
 end
 
 -- Minimap button (pfUI compatible)
