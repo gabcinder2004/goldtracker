@@ -1579,10 +1579,36 @@ GoldTracker:SetScript("OnEvent", function()
         transactionContext = nil
     elseif event == "QUEST_COMPLETE" then
         transactionContext = "quest"
-        -- Quest context clears after short delay (gold awarded on accept)
+        -- Clear quest context after 2 seconds (reward comes on button click)
+        if not GoldTracker.questTimer then
+            GoldTracker.questTimer = CreateFrame("Frame")
+        end
+        GoldTracker.questTimer.elapsed = 0
+        GoldTracker.questTimer:SetScript("OnUpdate", function()
+            this.elapsed = this.elapsed + arg1
+            if this.elapsed > 2 then
+                if transactionContext == "quest" then
+                    transactionContext = nil
+                end
+                this:SetScript("OnUpdate", nil)
+            end
+        end)
     elseif event == "CHAT_MSG_MONEY" then
-        -- Loot gold message - set context briefly
         transactionContext = "loot"
+        -- Clear loot context after short delay
+        if not GoldTracker.lootTimer then
+            GoldTracker.lootTimer = CreateFrame("Frame")
+        end
+        GoldTracker.lootTimer.elapsed = 0
+        GoldTracker.lootTimer:SetScript("OnUpdate", function()
+            this.elapsed = this.elapsed + arg1
+            if this.elapsed > 0.5 then
+                if transactionContext == "loot" then
+                    transactionContext = nil
+                end
+                this:SetScript("OnUpdate", nil)
+            end
+        end)
     end
 end)
 
