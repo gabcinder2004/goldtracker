@@ -176,25 +176,6 @@ local function IsSameDay(t1, t2)
     return d1.year == d2.year and d1.month == d2.month and d1.day == d2.day
 end
 
--- Transaction: Record a gold transaction with source
-local function RecordTransaction(amount, source)
-    local data = InitCharacterData()
-    if not data then return end
-
-    if not data.transactions then
-        data.transactions = {}
-    end
-
-    local balance = GetMoney()
-
-    table.insert(data.transactions, {
-        timestamp = time(),
-        amount = amount,
-        source = source or "unknown",
-        balance = balance,
-    })
-end
-
 -- Data: Initialize character data
 local function InitCharacterData()
     if not dbReady then return nil end
@@ -231,6 +212,25 @@ local function InitCharacterData()
     end
 
     return data
+end
+
+-- Transaction: Record a gold transaction with source
+local function RecordTransaction(amount, source)
+    local data = InitCharacterData()
+    if not data then return end
+
+    if not data.transactions then
+        data.transactions = {}
+    end
+
+    local balance = GetMoney()
+
+    table.insert(data.transactions, {
+        timestamp = time(),
+        amount = amount,
+        source = source or "unknown",
+        balance = balance,
+    })
 end
 
 -- Data: Record gold data point
