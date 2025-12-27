@@ -1180,6 +1180,66 @@ local function CreateMainFrame()
     transactionsFrame.pagination:SetPoint("BOTTOMRIGHT", transactionsFrame, "BOTTOMRIGHT", 0, 0)
     transactionsFrame.pagination:SetHeight(20)
 
+    -- Pagination: Page indicator
+    transactionsFrame.pageText = transactionsFrame.pagination:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    transactionsFrame.pageText:SetPoint("LEFT", transactionsFrame.pagination, "LEFT", 0, 0)
+    transactionsFrame.pageText:SetTextColor(0.7, 0.7, 0.7, 1)
+    transactionsFrame.pageText:SetText("Page 1 of 1")
+
+    -- Pagination: Next button
+    transactionsFrame.nextBtn = CreateFrame("Button", nil, transactionsFrame.pagination)
+    transactionsFrame.nextBtn:SetWidth(50)
+    transactionsFrame.nextBtn:SetHeight(18)
+    transactionsFrame.nextBtn:SetPoint("RIGHT", transactionsFrame.pagination, "RIGHT", 0, 0)
+
+    transactionsFrame.nextBtn.text = transactionsFrame.nextBtn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    transactionsFrame.nextBtn.text:SetPoint("CENTER", 0, 0)
+    transactionsFrame.nextBtn.text:SetText("Next >")
+
+    transactionsFrame.nextBtn:SetScript("OnClick", function()
+        local data = InitCharacterData()
+        if not data or not data.transactions then return end
+        local filtered = GoldTracker:GetFilteredTransactions()
+        local totalPages = math.ceil(table.getn(filtered) / TRANSACTIONS_PER_PAGE)
+        if currentPage < totalPages then
+            currentPage = currentPage + 1
+            GoldTracker:UpdateTransactionList()
+        end
+    end)
+
+    transactionsFrame.nextBtn:SetScript("OnEnter", function()
+        this.text:SetTextColor(1, 0.843, 0, 1)
+    end)
+
+    transactionsFrame.nextBtn:SetScript("OnLeave", function()
+        this.text:SetTextColor(1, 1, 1, 1)
+    end)
+
+    -- Pagination: Prev button
+    transactionsFrame.prevBtn = CreateFrame("Button", nil, transactionsFrame.pagination)
+    transactionsFrame.prevBtn:SetWidth(50)
+    transactionsFrame.prevBtn:SetHeight(18)
+    transactionsFrame.prevBtn:SetPoint("RIGHT", transactionsFrame.nextBtn, "LEFT", -10, 0)
+
+    transactionsFrame.prevBtn.text = transactionsFrame.prevBtn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    transactionsFrame.prevBtn.text:SetPoint("CENTER", 0, 0)
+    transactionsFrame.prevBtn.text:SetText("< Prev")
+
+    transactionsFrame.prevBtn:SetScript("OnClick", function()
+        if currentPage > 1 then
+            currentPage = currentPage - 1
+            GoldTracker:UpdateTransactionList()
+        end
+    end)
+
+    transactionsFrame.prevBtn:SetScript("OnEnter", function()
+        this.text:SetTextColor(1, 0.843, 0, 1)
+    end)
+
+    transactionsFrame.prevBtn:SetScript("OnLeave", function()
+        this.text:SetTextColor(1, 1, 1, 1)
+    end)
+
     mainFrame:Hide()
     return mainFrame
 end
