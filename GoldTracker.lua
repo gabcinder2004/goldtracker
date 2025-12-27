@@ -415,8 +415,10 @@ function GoldTracker:UpdateTransactionList()
             end
             row.detail:SetText(detailText)
 
-            -- Balance
-            row.balance:SetText(FormatGoldCompact(tx.balance, false))
+            -- Balance (show gold and silver)
+            local balGold = math.floor(tx.balance / 10000)
+            local balSilver = math.floor(math.mod(tx.balance, 10000) / 100)
+            row.balance:SetText(balGold .. "g " .. balSilver .. "s")
             row.balance:SetTextColor(COLORS.gold[1], COLORS.gold[2], COLORS.gold[3], 1)
 
             row:Show()
