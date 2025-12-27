@@ -978,6 +978,35 @@ local function CreateMainFrame()
         end
     end)
 
+    -- Transactions frame (hidden by default)
+    transactionsFrame = CreateFrame("Frame", nil, mainFrame)
+    transactionsFrame:SetPoint("TOPLEFT", mainFrame, "TOPLEFT", 10, -CHART_TOP_OFFSET)
+    transactionsFrame:SetPoint("BOTTOMRIGHT", mainFrame, "BOTTOMRIGHT", -10, 8)
+    transactionsFrame:Hide()
+
+    -- Filter bar container
+    transactionsFrame.filterBar = CreateFrame("Frame", nil, transactionsFrame)
+    transactionsFrame.filterBar:SetPoint("TOPLEFT", transactionsFrame, "TOPLEFT", 0, 0)
+    transactionsFrame.filterBar:SetPoint("TOPRIGHT", transactionsFrame, "TOPRIGHT", 0, 0)
+    transactionsFrame.filterBar:SetHeight(28)
+
+    -- Table container
+    transactionsFrame.tableFrame = CreateFrame("Frame", nil, transactionsFrame)
+    transactionsFrame.tableFrame:SetPoint("TOPLEFT", transactionsFrame.filterBar, "BOTTOMLEFT", 0, -4)
+    transactionsFrame.tableFrame:SetPoint("BOTTOMRIGHT", transactionsFrame, "BOTTOMRIGHT", 0, 24)
+
+    -- Table background
+    local tableBg = transactionsFrame.tableFrame:CreateTexture(nil, "BACKGROUND")
+    tableBg:SetTexture("Interface\\Buttons\\WHITE8X8")
+    tableBg:SetAllPoints()
+    tableBg:SetVertexColor(0.05, 0.05, 0.05, 0.5)
+
+    -- Pagination container
+    transactionsFrame.pagination = CreateFrame("Frame", nil, transactionsFrame)
+    transactionsFrame.pagination:SetPoint("BOTTOMLEFT", transactionsFrame, "BOTTOMLEFT", 0, 0)
+    transactionsFrame.pagination:SetPoint("BOTTOMRIGHT", transactionsFrame, "BOTTOMRIGHT", 0, 0)
+    transactionsFrame.pagination:SetHeight(20)
+
     mainFrame:Hide()
     return mainFrame
 end
