@@ -202,10 +202,35 @@ local function InitCharacterData()
     if not GoldTrackerDB[key] then
         GoldTrackerDB[key] = {
             history = {},
+            transactions = {},
             framePos = nil,
         }
     end
-    return GoldTrackerDB[key]
+
+    -- Migrate historical data to transactions if needed
+    local data = GoldTrackerDB[key]
+    if not data.transactions then
+        data.transactions = {}
+        -- Generate transactions from history deltas
+        local history = data.history
+        if history and table.getn(history) > 1 then
+            for i = 2, table.getn(history) do
+                local prev = history[i - 1]
+                local curr = history[i]
+                local delta = curr.gold - prev.gold
+                if delta ~= 0 then
+                    table.insert(data.transactions, {
+                        timestamp = curr.timestamp,
+                        amount = delta,
+                        source = "historical",
+                        balance = curr.gold,
+                    })
+                end
+            end
+        end
+    end
+
+    return data
 end
 
 -- Data: Record gold data point
