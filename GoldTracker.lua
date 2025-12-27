@@ -1128,17 +1128,6 @@ local function CreateMainFrame()
         btn.icon:SetWidth(filterBtnSize - 4)
         btn.icon:SetHeight(filterBtnSize - 4)
 
-        -- Border
-        btn.border = btn:CreateTexture(nil, "OVERLAY")
-        btn.border:SetTexture("Interface\\Buttons\\WHITE8X8")
-        btn.border:SetPoint("TOPLEFT", -1, 1)
-        btn.border:SetPoint("BOTTOMRIGHT", 1, -1)
-        btn.border:SetVertexColor(0.3, 0.3, 0.3, 1)
-        btn:SetFrameLevel(btn.border:GetDrawLayer() == "OVERLAY" and btn:GetFrameLevel() + 1 or btn:GetFrameLevel())
-
-        -- Reparent so border is behind icon
-        btn.border:SetDrawLayer("BORDER")
-
         btn.sourceKey = source.key
         btn.sourceLabel = source.label  -- Store label for tooltip
 
@@ -1152,18 +1141,14 @@ local function CreateMainFrame()
                 end
                 if allActive then
                     self.icon:SetVertexColor(1, 0.843, 0, 1)
-                    self.border:SetVertexColor(COLORS.border[1], COLORS.border[2], COLORS.border[3], 1)
                 else
-                    self.icon:SetVertexColor(0.5, 0.5, 0.5, 1)
-                    self.border:SetVertexColor(0.3, 0.3, 0.3, 1)
+                    self.icon:SetVertexColor(0.4, 0.4, 0.4, 1)
                 end
             else
                 if activeFilters[self.sourceKey] then
                     self.icon:SetVertexColor(1, 1, 1, 1)
-                    self.border:SetVertexColor(COLORS.border[1], COLORS.border[2], COLORS.border[3], 1)
                 else
                     self.icon:SetVertexColor(0.3, 0.3, 0.3, 1)
-                    self.border:SetVertexColor(0.2, 0.2, 0.2, 1)
                 end
             end
         end
