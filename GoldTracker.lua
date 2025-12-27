@@ -990,6 +990,103 @@ local function CreateMainFrame()
     transactionsFrame.filterBar:SetPoint("TOPRIGHT", transactionsFrame, "TOPRIGHT", 0, 0)
     transactionsFrame.filterBar:SetHeight(28)
 
+    -- Create filter toggle buttons
+    transactionsFrame.filterButtons = {}
+    local filterBtnSize = 24
+    local filterSpacing = 4
+
+    for i, source in ipairs(SOURCES) do
+        local btn = CreateFrame("Button", nil, transactionsFrame.filterBar)
+        btn:SetWidth(filterBtnSize)
+        btn:SetHeight(filterBtnSize)
+        btn:SetPoint("TOPLEFT", transactionsFrame.filterBar, "TOPLEFT", (i - 1) * (filterBtnSize + filterSpacing), -2)
+
+        -- Icon
+        btn.icon = btn:CreateTexture(nil, "ARTWORK")
+        btn.icon:SetTexture(source.icon)
+        btn.icon:SetPoint("CENTER", 0, 0)
+        btn.icon:SetWidth(filterBtnSize - 4)
+        btn.icon:SetHeight(filterBtnSize - 4)
+
+        -- Border
+        btn.border = btn:CreateTexture(nil, "OVERLAY")
+        btn.border:SetTexture("Interface\\Buttons\\WHITE8X8")
+        btn.border:SetPoint("TOPLEFT", -1, 1)
+        btn.border:SetPoint("BOTTOMRIGHT", 1, -1)
+        btn.border:SetVertexColor(0.3, 0.3, 0.3, 1)
+        btn:SetFrameLevel(btn.border:GetDrawLayer() == "OVERLAY" and btn:GetFrameLevel() + 1 or btn:GetFrameLevel())
+
+        -- Reparent so border is behind icon
+        btn.border:SetDrawLayer("BORDER")
+
+        btn.sourceKey = source.key
+
+        -- Update visual state
+        btn.UpdateState = function(self)
+            if self.sourceKey == "all" then
+                -- All button is highlighted if all filters are active
+                local allActive = true
+                for key, active in pairs(activeFilters) do
+                    if not active then allActive = false break end
+                end
+                if allActive then
+                    self.icon:SetVertexColor(1, 0.843, 0, 1)
+                    self.border:SetVertexColor(COLORS.border[1], COLORS.border[2], COLORS.border[3], 1)
+                else
+                    self.icon:SetVertexColor(0.5, 0.5, 0.5, 1)
+                    self.border:SetVertexColor(0.3, 0.3, 0.3, 1)
+                end
+            else
+                if activeFilters[self.sourceKey] then
+                    self.icon:SetVertexColor(1, 1, 1, 1)
+                    self.border:SetVertexColor(COLORS.border[1], COLORS.border[2], COLORS.border[3], 1)
+                else
+                    self.icon:SetVertexColor(0.3, 0.3, 0.3, 1)
+                    self.border:SetVertexColor(0.2, 0.2, 0.2, 1)
+                end
+            end
+        end
+
+        btn:SetScript("OnClick", function()
+            if this.sourceKey == "all" then
+                -- Toggle all filters
+                local allActive = true
+                for key, active in pairs(activeFilters) do
+                    if not active then allActive = false break end
+                end
+                for j, s in ipairs(SOURCES) do
+                    if s.key ~= "all" then
+                        activeFilters[s.key] = not allActive
+                    end
+                end
+            else
+                activeFilters[this.sourceKey] = not activeFilters[this.sourceKey]
+            end
+
+            -- Update all button states
+            for key, filterBtn in pairs(transactionsFrame.filterButtons) do
+                filterBtn:UpdateState()
+            end
+
+            -- Reset to page 1 and refresh
+            currentPage = 1
+            GoldTracker:UpdateTransactionList()
+        end)
+
+        btn:SetScript("OnEnter", function()
+            GameTooltip:SetOwner(this, "ANCHOR_BOTTOM")
+            GameTooltip:SetText(source.label, 1, 1, 1)
+            GameTooltip:Show()
+        end)
+
+        btn:SetScript("OnLeave", function()
+            GameTooltip:Hide()
+        end)
+
+        transactionsFrame.filterButtons[source.key] = btn
+        btn:UpdateState()
+    end
+
     -- Table container
     transactionsFrame.tableFrame = CreateFrame("Frame", nil, transactionsFrame)
     transactionsFrame.tableFrame:SetPoint("TOPLEFT", transactionsFrame.filterBar, "BOTTOMLEFT", 0, -4)
