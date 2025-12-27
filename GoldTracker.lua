@@ -892,7 +892,11 @@ local function CreateMainFrame()
             info.func = function()
                 currentRange = rangeKey
                 GoldTrackerDropdownText:SetText(rangeLabel)
+                currentPage = 1  -- Reset to first page
                 GoldTracker:UpdateChart()
+                if transactionsFrame and transactionsFrame:IsVisible() then
+                    GoldTracker:UpdateTransactionList()
+                end
             end
             info.checked = (currentRange == rangeKey)
             UIDropDownMenu_AddButton(info)
