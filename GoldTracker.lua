@@ -62,7 +62,7 @@ local SOURCES = {
     {key = "historical", label = "Historical", icon = "Interface\\Icons\\INV_Misc_PocketWatch_01"},
 }
 
-local TRANSACTIONS_PER_PAGE = 15
+local TRANSACTIONS_PER_PAGE = 10
 
 local RANGES = {
     {key = "session", label = "This Session"},
@@ -1140,6 +1140,7 @@ local function CreateMainFrame()
         btn.border:SetDrawLayer("BORDER")
 
         btn.sourceKey = source.key
+        btn.sourceLabel = source.label  -- Store label for tooltip
 
         -- Update visual state
         btn.UpdateState = function(self)
@@ -1195,7 +1196,7 @@ local function CreateMainFrame()
 
         btn:SetScript("OnEnter", function()
             GameTooltip:SetOwner(this, "ANCHOR_BOTTOM")
-            GameTooltip:SetText(source.label, 1, 1, 1)
+            GameTooltip:SetText(this.sourceLabel, 1, 1, 1)
             GameTooltip:Show()
         end)
 
