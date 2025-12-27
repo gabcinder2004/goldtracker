@@ -969,10 +969,34 @@ local function CreateMinimapButton()
     minimapButton:Show()
 end
 
+-- Check if player has any damaged gear (for repair detection)
+local function HasDamagedGear()
+    for slot = 1, 18 do
+        local hasItem, _, repairCost = GameTooltip:SetInventoryItem("player", slot)
+        if repairCost and repairCost > 0 then
+            return true
+        end
+    end
+    return false
+end
+
 -- Event handling
 GoldTracker:RegisterEvent("VARIABLES_LOADED")
 GoldTracker:RegisterEvent("PLAYER_ENTERING_WORLD")
 GoldTracker:RegisterEvent("PLAYER_MONEY")
+-- Context tracking events
+GoldTracker:RegisterEvent("MERCHANT_SHOW")
+GoldTracker:RegisterEvent("MERCHANT_CLOSED")
+GoldTracker:RegisterEvent("AUCTION_HOUSE_SHOW")
+GoldTracker:RegisterEvent("AUCTION_HOUSE_CLOSED")
+GoldTracker:RegisterEvent("MAIL_SHOW")
+GoldTracker:RegisterEvent("MAIL_CLOSED")
+GoldTracker:RegisterEvent("TRADE_SHOW")
+GoldTracker:RegisterEvent("TRADE_CLOSED")
+GoldTracker:RegisterEvent("TRAINER_SHOW")
+GoldTracker:RegisterEvent("TRAINER_CLOSED")
+GoldTracker:RegisterEvent("QUEST_COMPLETE")
+GoldTracker:RegisterEvent("CHAT_MSG_MONEY")
 
 GoldTracker:SetScript("OnEvent", function()
     if event == "VARIABLES_LOADED" then
@@ -982,12 +1006,19 @@ GoldTracker:SetScript("OnEvent", function()
         end
         dbReady = true
 
+        -- Initialize active filters (all enabled by default)
+        for i, source in ipairs(SOURCES) do
+            if source.key ~= "all" then
+                activeFilters[source.key] = true
+            end
+        end
+
     elseif event == "PLAYER_ENTERING_WORLD" then
         -- Initialize session
         sessionStart = time()
         sessionStartGold = GetMoney()
 
-        -- Initialize data and record starting point (lastGold is nil so first point will record)
+        -- Initialize data and record starting point
         InitCharacterData()
         RecordGold()
 
@@ -997,7 +1028,54 @@ GoldTracker:SetScript("OnEvent", function()
         DEFAULT_CHAT_FRAME:AddMessage("|cffffd700GoldTracker|r loaded. Use |cff00ff00/gt|r or |cff00ff00/goldtracker|r to toggle.")
 
     elseif event == "PLAYER_MONEY" then
+        local currentGold = GetMoney()
+        local delta = 0
+        if lastGold then
+            delta = currentGold - lastGold
+        end
+
+        -- Record transaction with context
+        if delta ~= 0 then
+            local source = transactionContext or "unknown"
+
+            -- Detect repair vs vendor
+            if source == "vendor" and delta < 0 then
+                -- Could be repair - we'll mark as vendor since we can't reliably detect
+                source = "vendor"
+            end
+
+            RecordTransaction(delta, source)
+        end
+
         RecordGold()
+
+    -- Context tracking
+    elseif event == "MERCHANT_SHOW" then
+        transactionContext = "vendor"
+    elseif event == "MERCHANT_CLOSED" then
+        transactionContext = nil
+    elseif event == "AUCTION_HOUSE_SHOW" then
+        transactionContext = "auction"
+    elseif event == "AUCTION_HOUSE_CLOSED" then
+        transactionContext = nil
+    elseif event == "MAIL_SHOW" then
+        transactionContext = "mail"
+    elseif event == "MAIL_CLOSED" then
+        transactionContext = nil
+    elseif event == "TRADE_SHOW" then
+        transactionContext = "trade"
+    elseif event == "TRADE_CLOSED" then
+        transactionContext = nil
+    elseif event == "TRAINER_SHOW" then
+        transactionContext = "training"
+    elseif event == "TRAINER_CLOSED" then
+        transactionContext = nil
+    elseif event == "QUEST_COMPLETE" then
+        transactionContext = "quest"
+        -- Quest context clears after short delay (gold awarded on accept)
+    elseif event == "CHAT_MSG_MONEY" then
+        -- Loot gold message - set context briefly
+        transactionContext = "loot"
     end
 end)
 
