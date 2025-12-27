@@ -11,13 +11,16 @@ local dotTextures = {}
 local gridLines = {}
 local sessionStart = nil
 local sessionStartGold = nil
-local currentRange = "all"
+local currentRange = "1day"
 local currentTab = "chart"  -- "chart" or "transactions"
 local transactionContext = nil  -- Current context for source detection
 local transactionDetail = nil   -- Detail info (NPC name, player name, etc.)
+local currentMailSender = nil   -- Captured when mail is opened
+local originalTakeInboxMoney = nil  -- For hooking TakeInboxMoney
 local activeFilters = {}  -- Which sources are visible
 local currentPage = 1
 local transactionsFrame = nil
+local statisticsFrame = nil
 local tabButtons = {}
 local lastGold = nil
 local yAxisLabels = {}
@@ -26,7 +29,7 @@ local chartDataPoints = {} -- Stores {x, y, gold, timestamp} for hover detection
 local minimapButton = nil
 
 -- Constants
-local FRAME_WIDTH = 400
+local FRAME_WIDTH = 450
 local FRAME_HEIGHT = 280  -- Increased for tabs
 local CHART_PADDING_LEFT = 55
 local CHART_PADDING_RIGHT = 15
@@ -51,7 +54,7 @@ local COLORS = {
 
 local SOURCES = {
     {key = "all", label = "All", icon = "Interface\\Buttons\\UI-CheckBox-Check"},
-    {key = "loot", label = "Loot", icon = "Interface\\Icons\\INV_Misc_Coin_17"},
+    {key = "loot", label = "Loot", icon = "Interface\\Icons\\INV_Misc_Coin_02"},
     {key = "vendor", label = "Vendor", icon = "Interface\\Icons\\INV_Misc_Bag_10"},
     {key = "auction", label = "Auction", icon = "Interface\\Icons\\INV_Hammer_15"},
     {key = "mail", label = "Mail", icon = "Interface\\Icons\\INV_Letter_15"},
@@ -107,24 +110,79 @@ local function FormatGoldColored(copper)
     return prefix .. "|cffffd700" .. gold .. "g|r |cffbfbfbf" .. silver .. "s|r |cffb87333" .. cop .. "c|r"
 end
 
--- Utility: Format gold compactly for axis labels (with optional precision hint)
-local function FormatGoldCompact(copper, showDetail)
+-- Utility: Find a "nice" step size for Y-axis labels
+-- Returns a clean interval like 10c, 25c, 50c, 1s, 5s, 10s, 25s, 50s, 1g, 2g, 5g, 10g, etc.
+local function GetNiceStep(rawStep)
+    -- Nice intervals in copper: 10c, 25c, 50c, 1s, 2s, 5s, 10s, 25s, 50s, 1g, 2g, 5g, 10g, 25g, 50g, 100g...
+    local niceSteps = {
+        10, 25, 50,                          -- copper
+        100, 200, 500,                       -- 1s, 2s, 5s
+        1000, 2500, 5000,                    -- 10s, 25s, 50s
+        10000, 20000, 50000,                 -- 1g, 2g, 5g
+        100000, 250000, 500000,              -- 10g, 25g, 50g
+        1000000, 2500000, 5000000,           -- 100g, 250g, 500g
+        10000000, 25000000, 50000000,        -- 1000g, 2500g, 5000g
+    }
+
+    for i, step in ipairs(niceSteps) do
+        if step >= rawStep then
+            return step
+        end
+    end
+    -- For very large ranges, round to nearest 1000g multiple
+    return math.ceil(rawStep / 10000000) * 10000000
+end
+
+-- Utility: Calculate nice Y-axis bounds and step
+-- Returns: niceMin, niceMax, niceStep
+local function GetNiceAxisBounds(minVal, maxVal, numSteps)
+    local range = maxVal - minVal
+    if range == 0 then range = 10000 end -- Default to 1g range
+
+    local rawStep = range / numSteps
+    local niceStep = GetNiceStep(rawStep)
+
+    -- Snap min down and max up to nice step multiples
+    local niceMin = math.floor(minVal / niceStep) * niceStep
+    local niceMax = math.ceil(maxVal / niceStep) * niceStep
+
+    -- Ensure we have at least numSteps intervals
+    while (niceMax - niceMin) / niceStep < numSteps do
+        niceMax = niceMax + niceStep
+    end
+
+    return niceMin, niceMax, niceStep
+end
+
+-- Utility: Format gold compactly for axis labels
+-- niceStep: the interval between labels (used to determine precision)
+local function FormatGoldCompact(copper, niceStep)
     if not copper then return "0g" end
     if copper < 0 then copper = 0 end
     local gold = math.floor(copper / 10000)
     local silver = math.floor(math.mod(copper, 10000) / 100)
     local cop = math.mod(copper, 100)
 
+    -- Determine precision based on nice step size
+    local showSilver = niceStep and niceStep < 10000
+    local showCopper = niceStep and niceStep < 100
+
     if gold >= 1000 then
         return string.format("%.1fk", gold / 1000)
     elseif gold > 0 then
-        if showDetail then
+        if showCopper then
+            return gold .. "g" .. silver .. "s" .. cop .. "c"
+        elseif showSilver then
             return gold .. "g" .. silver .. "s"
         else
             return gold .. "g"
         end
     elseif silver > 0 then
-        return silver .. "s"
+        if showCopper then
+            return silver .. "s" .. cop .. "c"
+        else
+            return silver .. "s"
+        end
     else
         return cop .. "c"
     end
@@ -410,8 +468,8 @@ function GoldTracker:UpdateTransactionList()
             -- Detail (NPC name, player name, quest name, etc.) - truncate for display
             local detailText = tx.detail or ""
             row.detailFull = detailText
-            if string.len(detailText) > 14 then
-                detailText = string.sub(detailText, 1, 12) .. ".."
+            if string.len(detailText) > 18 then
+                detailText = string.sub(detailText, 1, 16) .. ".."
             end
             row.detail:SetText(detailText)
 
@@ -520,22 +578,19 @@ function GoldTracker:UpdateChart()
         -- Draw a single dot in the center representing current gold
         DrawDot(CHART_WIDTH / 2, CHART_HEIGHT / 2, 1)
 
-        -- Show Y-axis labels based on current gold (+/- 10% range)
+        -- Show Y-axis labels based on current gold with nice intervals
         local baseGold = currentGold
         if count == 1 then
             baseGold = history[1].gold
         end
         local padding = math.max(baseGold * 0.1, 10000) -- At least 1g padding
-        local minGold = baseGold - padding
-        local maxGold = baseGold + padding
-        local goldRange = maxGold - minGold
-        local showDetail = goldRange < 10000
         local gridCount = 4
+        local niceMin, niceMax, niceStep = GetNiceAxisBounds(baseGold - padding, baseGold + padding, gridCount)
 
         for i = 0, gridCount do
             if yAxisLabels[i + 1] then
-                local goldValue = minGold + (goldRange * (i / gridCount))
-                yAxisLabels[i + 1]:SetText(FormatGoldCompact(goldValue, showDetail))
+                local goldValue = niceMin + (niceStep * i)
+                yAxisLabels[i + 1]:SetText(FormatGoldCompact(goldValue, niceStep))
             end
         end
 
@@ -577,25 +632,26 @@ function GoldTracker:UpdateChart()
         if entry.gold > maxGold then maxGold = entry.gold end
     end
 
-    -- Add padding to gold range
+    -- Calculate nice Y-axis bounds with clean intervals
+    local gridCount = 4
+    local rawRange = maxGold - minGold
+    if rawRange == 0 then rawRange = 10000 end -- Default 1g range
+    -- Add small padding before calculating nice bounds
+    local paddedMin = minGold - (rawRange * 0.05)
+    local paddedMax = maxGold + (rawRange * 0.05)
+    local niceMin, niceMax, niceStep = GetNiceAxisBounds(paddedMin, paddedMax, gridCount)
+    minGold = niceMin
+    maxGold = niceMax
     local goldRange = maxGold - minGold
-    if goldRange == 0 then goldRange = 1 end
-    local padding = goldRange * 0.1
-    minGold = minGold - padding
-    maxGold = maxGold + padding
-    goldRange = maxGold - minGold
 
     local timeRange = maxTime - minTime
     if timeRange == 0 then timeRange = 1 end
 
-    -- Update Y-axis labels (5 labels: 0%, 25%, 50%, 75%, 100%)
-    -- Show detail (silver) when range is less than 1 gold
-    local showDetail = goldRange < 10000
-    local gridCount = 4
+    -- Update Y-axis labels using nice step intervals
     for i = 0, gridCount do
         if yAxisLabels[i + 1] then
-            local goldValue = minGold + (goldRange * (i / gridCount))
-            yAxisLabels[i + 1]:SetText(FormatGoldCompact(goldValue, showDetail))
+            local goldValue = minGold + (niceStep * i)
+            yAxisLabels[i + 1]:SetText(FormatGoldCompact(goldValue, niceStep))
         end
     end
 
@@ -818,6 +874,14 @@ local function SwitchTab(tabKey)
             transactionsFrame:Hide()
         end
     end
+
+    if statisticsFrame then
+        if tabKey == "statistics" then
+            statisticsFrame:Show()
+        else
+            statisticsFrame:Hide()
+        end
+    end
 end
 
 -- UI: Create main frame
@@ -882,11 +946,9 @@ local function CreateMainFrame()
     title:SetText("GoldTracker")
     title:SetTextColor(COLORS.text[1], COLORS.text[2], COLORS.text[3])
 
-    -- Close button
+    -- Close button (inherits strata from parent)
     local closeBtn = CreateFrame("Button", nil, mainFrame, "UIPanelCloseButton")
     closeBtn:SetPoint("TOPRIGHT", mainFrame, "TOPRIGHT", 1, 1)
-    closeBtn:SetFrameStrata("HIGH")
-    closeBtn:SetFrameLevel(mainFrame:GetFrameLevel() + 10)
     closeBtn:SetScript("OnClick", function() mainFrame:Hide() end)
 
     -- Dropdown for time range
@@ -917,7 +979,7 @@ local function CreateMainFrame()
     UIDropDownMenu_Initialize(dropdown, DropdownInit)
 
     -- Set initial dropdown text
-    GoldTrackerDropdownText:SetText("All Time")
+    GoldTrackerDropdownText:SetText("Last Day")
 
     -- Tab bar separator line
     local tabSeparator = mainFrame:CreateTexture(nil, "ARTWORK")
@@ -930,6 +992,7 @@ local function CreateMainFrame()
     -- Tab buttons
     tabButtons.chart = CreateTabButton(mainFrame, "Chart", "chart", 10)
     tabButtons.transactions = CreateTabButton(mainFrame, "Transactions", "transactions", 92)
+    tabButtons.statistics = CreateTabButton(mainFrame, "Statistics", "statistics", 174)
 
     -- Tab click handlers
     tabButtons.chart:SetScript("OnClick", function()
@@ -938,10 +1001,14 @@ local function CreateMainFrame()
     tabButtons.transactions:SetScript("OnClick", function()
         SwitchTab("transactions")
     end)
+    tabButtons.statistics:SetScript("OnClick", function()
+        SwitchTab("statistics")
+    end)
 
     -- Set initial tab state
     tabButtons.chart:SetActive(true)
     tabButtons.transactions:SetActive(false)
+    tabButtons.statistics:SetActive(false)
 
     -- Chart frame (inner area for chart)
     chartFrame = CreateFrame("Frame", nil, mainFrame)
@@ -1039,8 +1106,8 @@ local function CreateMainFrame()
             table.insert(gridLines, gridLine)
         end
 
-        -- Y-axis label
-        local yLabel = mainFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        -- Y-axis label (parent to chartFrame so it hides with the chart)
+        local yLabel = chartFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
         yLabel:SetPoint("RIGHT", chartFrame, "BOTTOMLEFT", -5, (CHART_HEIGHT / gridCount) * i)
         yLabel:SetTextColor(0.6, 0.6, 0.6, 1)
         yLabel:SetText("")
@@ -1063,8 +1130,8 @@ local function CreateMainFrame()
             tick:SetPoint("TOPRIGHT", chartFrame, "BOTTOMRIGHT", 0, 0)
         end
 
-        -- Label
-        local xLabel = mainFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        -- Label (parent to chartFrame so it hides with the chart)
+        local xLabel = chartFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
         if i == 1 then
             xLabel:SetPoint("TOPLEFT", chartFrame, "BOTTOMLEFT", 0, -6)
         elseif i == 2 then
@@ -1218,9 +1285,9 @@ local function CreateMainFrame()
 
     -- Table column headers
     local headerY = 0
-    local colWidths = {70, 65, 50, 110, 60}  -- Time, Amount, Source, Detail, Balance
+    local colWidths = {75, 80, 65, 115, 65}  -- Time, Amount, Source, Detail, Balance
     local colNames = {"Time", "Amount", "Source", "Detail", "Balance"}
-    local colPositions = {0, 70, 135, 185, 295}
+    local colPositions = {0, 75, 155, 220, 345}
 
     transactionsFrame.headers = {}
     for i, name in ipairs(colNames) do
@@ -1388,6 +1455,34 @@ local function CreateMainFrame()
         this.text:SetTextColor(1, 1, 1, 1)
     end)
 
+    -- Statistics frame (hidden by default)
+    statisticsFrame = CreateFrame("Frame", nil, mainFrame)
+    statisticsFrame:SetPoint("TOPLEFT", mainFrame, "TOPLEFT", 10, -CHART_TOP_OFFSET)
+    statisticsFrame:SetPoint("BOTTOMRIGHT", mainFrame, "BOTTOMRIGHT", -10, 8)
+    statisticsFrame:Hide()
+
+    -- Statistics background
+    local statsBg = statisticsFrame:CreateTexture(nil, "BACKGROUND")
+    statsBg:SetTexture("Interface\\Buttons\\WHITE8X8")
+    statsBg:SetAllPoints()
+    statsBg:SetVertexColor(0.05, 0.05, 0.05, 0.3)
+
+    -- Coming soon message
+    local comingSoonText = statisticsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    comingSoonText:SetPoint("CENTER", statisticsFrame, "CENTER", 0, 20)
+    comingSoonText:SetText("Statistics")
+    comingSoonText:SetTextColor(COLORS.gold[1], COLORS.gold[2], COLORS.gold[3], 1)
+
+    local comingSoonSubtext = statisticsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    comingSoonSubtext:SetPoint("CENTER", statisticsFrame, "CENTER", 0, -5)
+    comingSoonSubtext:SetText("Coming Soon")
+    comingSoonSubtext:SetTextColor(0.7, 0.7, 0.7, 1)
+
+    local comingSoonDesc = statisticsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    comingSoonDesc:SetPoint("CENTER", statisticsFrame, "CENTER", 0, -30)
+    comingSoonDesc:SetText("Detailed gold statistics and analytics")
+    comingSoonDesc:SetTextColor(0.5, 0.5, 0.5, 1)
+
     mainFrame:Hide()
     return mainFrame
 end
@@ -1548,6 +1643,32 @@ GoldTracker:SetScript("OnEvent", function()
             end
         end
 
+        -- Hook TakeInboxMoney to capture sender before money is taken
+        if TakeInboxMoney and not originalTakeInboxMoney then
+            originalTakeInboxMoney = TakeInboxMoney
+            TakeInboxMoney = function(mailIndex)
+                -- Capture sender before taking money
+                local _, _, sender = GetInboxHeaderInfo(mailIndex)
+                if sender then
+                    currentMailSender = sender
+                end
+                return originalTakeInboxMoney(mailIndex)
+            end
+        end
+
+        -- Also hook TurtleMail's stored reference if it exists
+        if TurtleMail and TurtleMail.TakeInboxMoney then
+            local turtleMailOriginal = TurtleMail.TakeInboxMoney
+            TurtleMail.TakeInboxMoney = function(mailIndex)
+                -- Capture sender before taking money
+                local _, _, sender = GetInboxHeaderInfo(mailIndex)
+                if sender then
+                    currentMailSender = sender
+                end
+                return turtleMailOriginal(mailIndex)
+            end
+        end
+
     elseif event == "PLAYER_ENTERING_WORLD" then
         -- Initialize session
         sessionStart = time()
@@ -1572,6 +1693,18 @@ GoldTracker:SetScript("OnEvent", function()
         -- Record transaction with context
         if delta ~= 0 then
             local source = transactionContext or "unknown"
+            local detail = transactionDetail
+
+            -- Fallback: Check if quest frame is visible (quest reward)
+            if source == "unknown" and delta > 0 then
+                if QuestFrame and QuestFrame:IsVisible() then
+                    source = "quest"
+                    detail = GetTitleText()
+                elseif QuestFrameRewardPanel and QuestFrameRewardPanel:IsVisible() then
+                    source = "quest"
+                    detail = GetTitleText()
+                end
+            end
 
             -- Detect repair vs vendor
             if source == "vendor" and delta < 0 then
@@ -1579,7 +1712,30 @@ GoldTracker:SetScript("OnEvent", function()
                 source = "vendor"
             end
 
-            RecordTransaction(delta, source, transactionDetail)
+            -- Try to get trade partner name at transaction time if not captured earlier
+            if source == "trade" and not detail then
+                if TradeFrameRecipientNameText then
+                    detail = TradeFrameRecipientNameText:GetText()
+                end
+                if not detail then
+                    detail = UnitName("target")
+                end
+            end
+
+            -- Try to get mail sender/recipient name
+            if source == "mail" and not detail then
+                if delta < 0 then
+                    -- Sending mail - get recipient from send box
+                    if SendMailNameEditBox then
+                        detail = SendMailNameEditBox:GetText()
+                    end
+                else
+                    -- Receiving mail - use captured sender from mail watcher
+                    detail = currentMailSender
+                end
+            end
+
+            RecordTransaction(delta, source, detail)
         end
 
         RecordGold()
@@ -1600,15 +1756,54 @@ GoldTracker:SetScript("OnEvent", function()
     elseif event == "MAIL_SHOW" then
         transactionContext = "mail"
         transactionDetail = nil
+        currentMailSender = nil
+        -- Start watching for open mail to capture sender
+        if not GoldTracker.mailWatcher then
+            GoldTracker.mailWatcher = CreateFrame("Frame")
+        end
+        GoldTracker.mailWatcher:SetScript("OnUpdate", function()
+            -- Check if a mail is open and capture the sender
+            if OpenMailFrame and OpenMailFrame:IsVisible() then
+                if OpenMailSender then
+                    local sender = OpenMailSender:GetText()
+                    if sender and sender ~= "" then
+                        currentMailSender = sender
+                    end
+                end
+            end
+        end)
     elseif event == "MAIL_CLOSED" then
         transactionContext = nil
         transactionDetail = nil
+        currentMailSender = nil
+        -- Stop mail watcher
+        if GoldTracker.mailWatcher then
+            GoldTracker.mailWatcher:SetScript("OnUpdate", nil)
+        end
     elseif event == "TRADE_SHOW" then
         transactionContext = "trade"
-        transactionDetail = UnitName("npc")
+        -- Get trade partner name from the trade frame UI
+        if TradeFrameRecipientNameText then
+            transactionDetail = TradeFrameRecipientNameText:GetText()
+        else
+            transactionDetail = UnitName("target")
+        end
     elseif event == "TRADE_CLOSED" then
-        transactionContext = nil
-        transactionDetail = nil
+        -- Delay clearing trade context so PLAYER_MONEY can capture it
+        if not GoldTracker.tradeTimer then
+            GoldTracker.tradeTimer = CreateFrame("Frame")
+        end
+        GoldTracker.tradeTimer.elapsed = 0
+        GoldTracker.tradeTimer:SetScript("OnUpdate", function()
+            this.elapsed = this.elapsed + arg1
+            if this.elapsed > 0.5 then
+                if transactionContext == "trade" then
+                    transactionContext = nil
+                    transactionDetail = nil
+                end
+                this:SetScript("OnUpdate", nil)
+            end
+        end)
     elseif event == "TRAINER_SHOW" then
         transactionContext = "training"
         transactionDetail = UnitName("npc")
@@ -1618,14 +1813,14 @@ GoldTracker:SetScript("OnEvent", function()
     elseif event == "QUEST_COMPLETE" then
         transactionContext = "quest"
         transactionDetail = GetTitleText()
-        -- Clear quest context after 2 seconds (reward comes on button click)
+        -- Clear quest context after 30 seconds (gives time to read rewards and select items)
         if not GoldTracker.questTimer then
             GoldTracker.questTimer = CreateFrame("Frame")
         end
         GoldTracker.questTimer.elapsed = 0
         GoldTracker.questTimer:SetScript("OnUpdate", function()
             this.elapsed = this.elapsed + arg1
-            if this.elapsed > 2 then
+            if this.elapsed > 30 then
                 if transactionContext == "quest" then
                     transactionContext = nil
                     transactionDetail = nil
@@ -1634,23 +1829,26 @@ GoldTracker:SetScript("OnEvent", function()
             end
         end)
     elseif event == "CHAT_MSG_MONEY" then
-        transactionContext = "loot"
-        transactionDetail = UnitName("target")
-        -- Clear loot context after short delay
-        if not GoldTracker.lootTimer then
-            GoldTracker.lootTimer = CreateFrame("Frame")
-        end
-        GoldTracker.lootTimer.elapsed = 0
-        GoldTracker.lootTimer:SetScript("OnUpdate", function()
-            this.elapsed = this.elapsed + arg1
-            if this.elapsed > 0.5 then
-                if transactionContext == "loot" then
-                    transactionContext = nil
-                    transactionDetail = nil
-                end
-                this:SetScript("OnUpdate", nil)
+        -- Only set loot context if no other context is active (don't overwrite quest, etc.)
+        if not transactionContext then
+            transactionContext = "loot"
+            transactionDetail = UnitName("target")
+            -- Clear loot context after short delay
+            if not GoldTracker.lootTimer then
+                GoldTracker.lootTimer = CreateFrame("Frame")
             end
-        end)
+            GoldTracker.lootTimer.elapsed = 0
+            GoldTracker.lootTimer:SetScript("OnUpdate", function()
+                this.elapsed = this.elapsed + arg1
+                if this.elapsed > 0.5 then
+                    if transactionContext == "loot" then
+                        transactionContext = nil
+                        transactionDetail = nil
+                    end
+                    this:SetScript("OnUpdate", nil)
+                end
+            end)
+        end
     end
 end)
 
