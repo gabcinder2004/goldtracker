@@ -591,6 +591,76 @@ local function RefreshRateDisplay()
     statsFrame.rateText:SetText("Rate: " .. rateColor .. FormatGold(math.floor(goldPerHour)) .. "/hr|r")
 end
 
+
+-- UI: Create a tab button
+local function CreateTabButton(parent, text, tabKey, xOffset)
+    local tab = CreateFrame("Button", nil, parent)
+    tab:SetWidth(80)
+    tab:SetHeight(22)
+    tab:SetPoint("TOPLEFT", parent, "TOPLEFT", xOffset, -25)
+
+    -- Background
+    tab.bg = tab:CreateTexture(nil, "BACKGROUND")
+    tab.bg:SetTexture("Interface\\Buttons\\WHITE8X8")
+    tab.bg:SetAllPoints()
+    tab.bg:SetVertexColor(0.1, 0.1, 0.1, 0.8)
+
+    -- Border (bottom is open for active tab)
+    tab.borders = {}
+    -- Top
+    tab.borders[1] = tab:CreateTexture(nil, "BORDER")
+    tab.borders[1]:SetTexture("Interface\\Buttons\\WHITE8X8")
+    tab.borders[1]:SetHeight(1)
+    tab.borders[1]:SetPoint("TOPLEFT", tab, "TOPLEFT", 0, 0)
+    tab.borders[1]:SetPoint("TOPRIGHT", tab, "TOPRIGHT", 0, 0)
+    -- Left
+    tab.borders[2] = tab:CreateTexture(nil, "BORDER")
+    tab.borders[2]:SetTexture("Interface\\Buttons\\WHITE8X8")
+    tab.borders[2]:SetWidth(1)
+    tab.borders[2]:SetPoint("TOPLEFT", tab, "TOPLEFT", 0, 0)
+    tab.borders[2]:SetPoint("BOTTOMLEFT", tab, "BOTTOMLEFT", 0, 0)
+    -- Right
+    tab.borders[3] = tab:CreateTexture(nil, "BORDER")
+    tab.borders[3]:SetTexture("Interface\\Buttons\\WHITE8X8")
+    tab.borders[3]:SetWidth(1)
+    tab.borders[3]:SetPoint("TOPRIGHT", tab, "TOPRIGHT", 0, 0)
+    tab.borders[3]:SetPoint("BOTTOMRIGHT", tab, "BOTTOMRIGHT", 0, 0)
+    -- Bottom (only shown when inactive)
+    tab.borders[4] = tab:CreateTexture(nil, "BORDER")
+    tab.borders[4]:SetTexture("Interface\\Buttons\\WHITE8X8")
+    tab.borders[4]:SetHeight(1)
+    tab.borders[4]:SetPoint("BOTTOMLEFT", tab, "BOTTOMLEFT", 0, 0)
+    tab.borders[4]:SetPoint("BOTTOMRIGHT", tab, "BOTTOMRIGHT", 0, 0)
+
+    -- Text
+    tab.text = tab:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    tab.text:SetPoint("CENTER", tab, "CENTER", 0, 0)
+    tab.text:SetText(text)
+
+    tab.tabKey = tabKey
+
+    -- Set visual state
+    tab.SetActive = function(self, active)
+        if active then
+            self.bg:SetVertexColor(0, 0, 0, 0.75)
+            self.borders[4]:Hide()
+            for i = 1, 3 do
+                self.borders[i]:SetVertexColor(COLORS.border[1], COLORS.border[2], COLORS.border[3], 1)
+            end
+            self.text:SetTextColor(1, 0.843, 0, 1)
+        else
+            self.bg:SetVertexColor(0.05, 0.05, 0.05, 0.8)
+            self.borders[4]:Show()
+            for i = 1, 4 do
+                self.borders[i]:SetVertexColor(0.4, 0.4, 0.4, 0.8)
+            end
+            self.text:SetTextColor(0.6, 0.6, 0.6, 1)
+        end
+    end
+
+    return tab
+end
+
 -- UI: Create main frame
 local function CreateMainFrame()
     if mainFrame then return mainFrame end
