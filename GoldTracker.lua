@@ -14,6 +14,7 @@ local sessionStartGold = nil
 local currentRange = "all"
 local currentTab = "chart"  -- "chart" or "transactions"
 local transactionContext = nil  -- Current context for source detection
+local transactionDetail = nil   -- Detail info (NPC name, player name, etc.)
 local activeFilters = {}  -- Which sources are visible
 local currentPage = 1
 local transactionsFrame = nil
@@ -215,8 +216,8 @@ local function InitCharacterData()
     return data
 end
 
--- Transaction: Record a gold transaction with source
-local function RecordTransaction(amount, source)
+-- Transaction: Record a gold transaction with source and detail
+local function RecordTransaction(amount, source, detail)
     local data = InitCharacterData()
     if not data then return end
 
@@ -230,6 +231,7 @@ local function RecordTransaction(amount, source)
         timestamp = time(),
         amount = amount,
         source = source or "unknown",
+        detail = detail,
         balance = balance,
     })
 end
@@ -404,6 +406,9 @@ function GoldTracker:UpdateTransactionList()
             local sourceText = tx.source
             sourceText = string.upper(string.sub(sourceText, 1, 1)) .. string.sub(sourceText, 2)
             row.source:SetText(sourceText)
+
+            -- Detail (NPC name, player name, quest name, etc.)
+            row.detail:SetText(tx.detail or "")
 
             -- Balance
             row.balance:SetText(FormatGoldCompact(tx.balance, false))
@@ -1206,9 +1211,9 @@ local function CreateMainFrame()
 
     -- Table column headers
     local headerY = 0
-    local colWidths = {90, 85, 70, 85}  -- Time, Amount, Source, Balance
-    local colNames = {"Time", "Amount", "Source", "Balance"}
-    local colPositions = {0, 90, 175, 245}
+    local colWidths = {70, 65, 50, 110, 60}  -- Time, Amount, Source, Detail, Balance
+    local colNames = {"Time", "Amount", "Source", "Detail", "Balance"}
+    local colPositions = {0, 70, 135, 185, 295}
 
     transactionsFrame.headers = {}
     for i, name in ipairs(colNames) do
@@ -1258,16 +1263,24 @@ local function CreateMainFrame()
         row.source:SetJustifyH("LEFT")
         row.source:SetTextColor(0.6, 0.6, 0.6, 1)
 
+        -- Detail column
+        row.detail = transactionsFrame.tableFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        row.detail:SetPoint("TOPLEFT", transactionsFrame.tableFrame, "TOPLEFT", colPositions[4], y)
+        row.detail:SetWidth(colWidths[4])
+        row.detail:SetJustifyH("LEFT")
+        row.detail:SetTextColor(0.6, 0.6, 0.6, 1)
+
         -- Balance column
         row.balance = transactionsFrame.tableFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-        row.balance:SetPoint("TOPLEFT", transactionsFrame.tableFrame, "TOPLEFT", colPositions[4], y)
-        row.balance:SetWidth(colWidths[4])
+        row.balance:SetPoint("TOPLEFT", transactionsFrame.tableFrame, "TOPLEFT", colPositions[5], y)
+        row.balance:SetWidth(colWidths[5])
         row.balance:SetJustifyH("LEFT")
 
         row.Show = function(self)
             self.time:Show()
             self.amount:Show()
             self.source:Show()
+            self.detail:Show()
             self.balance:Show()
         end
 
@@ -1275,6 +1288,7 @@ local function CreateMainFrame()
             self.time:Hide()
             self.amount:Hide()
             self.source:Hide()
+            self.detail:Hide()
             self.balance:Hide()
         end
 
@@ -1537,7 +1551,7 @@ GoldTracker:SetScript("OnEvent", function()
                 source = "vendor"
             end
 
-            RecordTransaction(delta, source)
+            RecordTransaction(delta, source, transactionDetail)
         end
 
         RecordGold()
@@ -1545,26 +1559,37 @@ GoldTracker:SetScript("OnEvent", function()
     -- Context tracking
     elseif event == "MERCHANT_SHOW" then
         transactionContext = "vendor"
+        transactionDetail = UnitName("npc")
     elseif event == "MERCHANT_CLOSED" then
         transactionContext = nil
+        transactionDetail = nil
     elseif event == "AUCTION_HOUSE_SHOW" then
         transactionContext = "auction"
+        transactionDetail = nil
     elseif event == "AUCTION_HOUSE_CLOSED" then
         transactionContext = nil
+        transactionDetail = nil
     elseif event == "MAIL_SHOW" then
         transactionContext = "mail"
+        transactionDetail = nil
     elseif event == "MAIL_CLOSED" then
         transactionContext = nil
+        transactionDetail = nil
     elseif event == "TRADE_SHOW" then
         transactionContext = "trade"
+        transactionDetail = UnitName("npc")
     elseif event == "TRADE_CLOSED" then
         transactionContext = nil
+        transactionDetail = nil
     elseif event == "TRAINER_SHOW" then
         transactionContext = "training"
+        transactionDetail = UnitName("npc")
     elseif event == "TRAINER_CLOSED" then
         transactionContext = nil
+        transactionDetail = nil
     elseif event == "QUEST_COMPLETE" then
         transactionContext = "quest"
+        transactionDetail = GetTitleText()
         -- Clear quest context after 2 seconds (reward comes on button click)
         if not GoldTracker.questTimer then
             GoldTracker.questTimer = CreateFrame("Frame")
@@ -1575,12 +1600,14 @@ GoldTracker:SetScript("OnEvent", function()
             if this.elapsed > 2 then
                 if transactionContext == "quest" then
                     transactionContext = nil
+                    transactionDetail = nil
                 end
                 this:SetScript("OnUpdate", nil)
             end
         end)
     elseif event == "CHAT_MSG_MONEY" then
         transactionContext = "loot"
+        transactionDetail = UnitName("target")
         -- Clear loot context after short delay
         if not GoldTracker.lootTimer then
             GoldTracker.lootTimer = CreateFrame("Frame")
@@ -1591,6 +1618,7 @@ GoldTracker:SetScript("OnEvent", function()
             if this.elapsed > 0.5 then
                 if transactionContext == "loot" then
                     transactionContext = nil
+                    transactionDetail = nil
                 end
                 this:SetScript("OnUpdate", nil)
             end
