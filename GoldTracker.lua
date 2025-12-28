@@ -343,6 +343,11 @@ local function RecordGold()
     if miniFrame and miniFrame:IsVisible() then
         GoldTracker:UpdateMiniChart()
     end
+
+    -- Update transaction list if visible
+    if transactionsFrame and transactionsFrame:IsVisible() then
+        GoldTracker:UpdateTransactionList()
+    end
 end
 
 -- Data: Get filtered history based on time range
@@ -1024,7 +1029,13 @@ local function CreateMainFrame()
                 currentRange = rangeKey
                 GoldTrackerDropdownText:SetText(rangeLabel)
                 currentPage = 1  -- Reset to first page
+                -- Save the range preference
+                local data = InitCharacterData()
+                if data then
+                    data.selectedRange = rangeKey
+                end
                 GoldTracker:UpdateChart()
+                GoldTracker:UpdateMiniChart()
                 if transactionsFrame and transactionsFrame:IsVisible() then
                     GoldTracker:UpdateTransactionList()
                 end
@@ -1035,8 +1046,15 @@ local function CreateMainFrame()
     end
     UIDropDownMenu_Initialize(dropdown, DropdownInit)
 
-    -- Set initial dropdown text
-    GoldTrackerDropdownText:SetText("Last Day")
+    -- Set initial dropdown text based on saved range
+    local rangeLabel = "Last Day"
+    for i, range in ipairs(RANGES) do
+        if range.key == currentRange then
+            rangeLabel = range.label
+            break
+        end
+    end
+    GoldTrackerDropdownText:SetText(rangeLabel)
 
     -- Tab bar separator line
     local tabSeparator = mainFrame:CreateTexture(nil, "ARTWORK")
@@ -1682,11 +1700,6 @@ end
 function GoldTracker:UpdateMiniChart()
     if not miniFrame or not miniFrame:IsVisible() then return end
 
-    -- Update gold text
-    local currentGold = GetMoney()
-    local gold = math.floor(currentGold / 10000)
-    miniFrame.goldText:SetText(gold .. "g")
-
     -- Clear old lines
     for i, tex in ipairs(miniLineTextures) do
         tex:Hide()
@@ -1698,6 +1711,27 @@ function GoldTracker:UpdateMiniChart()
     if not data then return end
     local history = GetFilteredHistory()
     local count = table.getn(history)
+
+    -- Update net profit text based on selected period
+    local currentGold = GetMoney()
+    local netChange = 0
+    if count > 0 then
+        netChange = currentGold - history[1].gold
+    end
+    local netGold = math.floor(math.abs(netChange) / 10000)
+    local netSilver = math.floor(math.mod(math.abs(netChange), 10000) / 100)
+    local prefix = netChange >= 0 and "+" or "-"
+    if netGold > 0 then
+        miniFrame.goldText:SetText(prefix .. netGold .. "g " .. netSilver .. "s")
+    else
+        miniFrame.goldText:SetText(prefix .. netSilver .. "s")
+    end
+    if netChange >= 0 then
+        miniFrame.goldText:SetTextColor(0.2, 0.8, 0.2, 1)
+    else
+        miniFrame.goldText:SetTextColor(0.8, 0.2, 0.2, 1)
+    end
+
     if count < 2 then return end
 
     -- Calculate bounds
@@ -1987,11 +2021,24 @@ GoldTracker:SetScript("OnEvent", function()
         sessionStartGold = GetMoney()
 
         -- Initialize data and record starting point
-        InitCharacterData()
+        local data = InitCharacterData()
         RecordGold()
+
+        -- Restore saved range preference (default to "1day")
+        if data and data.selectedRange then
+            currentRange = data.selectedRange
+        else
+            currentRange = "1day"
+        end
 
         -- Create minimap button
         CreateMinimapButton()
+
+        -- Create main frame (needed for mini frame to work)
+        CreateMainFrame()
+
+        -- Automatically show the minimized view on login
+        GoldTracker:MinimizeWindow()
 
         DEFAULT_CHAT_FRAME:AddMessage("|cffffd700GoldTracker|r loaded. Use |cff00ff00/gt|r or |cff00ff00/goldtracker|r to toggle.")
 
