@@ -462,8 +462,10 @@ function GoldTracker:CalculateStatistics()
         totalInCount = 0,
         totalOut = 0,
         totalOutCount = 0,
-        bestHour = nil,
-        bestHourRate = 0,
+        bestDay = nil,
+        bestDayTotal = 0,
+        bestPeriod = nil,
+        bestPeriodTotal = 0,
 
         -- Source breakdown
         incomeBySource = {},
@@ -583,21 +585,52 @@ function GoldTracker:CalculateStatistics()
         return math.abs(a.net) > math.abs(b.net)
     end)
 
-    -- Find best hour (highest average income)
-    local bestHourIdx = 0
-    local bestHourAvg = -999999999
-    for hour = 0, 23 do
-        if stats.byHourOfDay[hour].count > 0 then
-            local avg = stats.byHourOfDay[hour].total / stats.byHourOfDay[hour].count
-            if avg > bestHourAvg then
-                bestHourAvg = avg
-                bestHourIdx = hour
+    -- Find best day (highest total profit)
+    local bestDayIdx = 0
+    local bestDayTotal = -999999999
+    for day = 1, 7 do
+        if stats.byDayOfWeek[day].count > 0 then
+            local total = stats.byDayOfWeek[day].total
+            if total > bestDayTotal then
+                bestDayTotal = total
+                bestDayIdx = day
             end
         end
     end
-    if bestHourAvg > -999999999 then
-        stats.bestHour = bestHourIdx
-        stats.bestHourRate = bestHourAvg
+    if bestDayTotal > -999999999 then
+        stats.bestDay = bestDayIdx
+        stats.bestDayTotal = bestDayTotal
+    end
+
+    -- Find best time period (highest total profit)
+    -- Night: 0-5, Morning: 6-11, Afternoon: 12-17, Evening: 18-23
+    local periods = {
+        {startHour = 0, endHour = 5, name = "Night"},
+        {startHour = 6, endHour = 11, name = "Morning"},
+        {startHour = 12, endHour = 17, name = "Afternoon"},
+        {startHour = 18, endHour = 23, name = "Evening"},
+    }
+    local bestPeriodIdx = 0
+    local bestPeriodTotal = -999999999
+    for i, period in ipairs(periods) do
+        local total = 0
+        local hasData = false
+        for hour = period.startHour, period.endHour do
+            if stats.byHourOfDay[hour].count > 0 then
+                total = total + stats.byHourOfDay[hour].total
+                hasData = true
+            end
+        end
+        if hasData and total > bestPeriodTotal then
+            bestPeriodTotal = total
+            bestPeriodIdx = i
+        end
+    end
+    if bestPeriodTotal > -999999999 then
+        stats.bestPeriod = bestPeriodIdx
+        stats.bestPeriodTotal = bestPeriodTotal
+        local periodRanges = {"12am-6am", "6am-12pm", "12pm-6pm", "6pm-12am"}
+        stats.bestPeriodName = periodRanges[bestPeriodIdx]
     end
 
     return stats
@@ -707,8 +740,30 @@ function GoldTracker:UpdateStatisticsDisplay()
         statisticsFrame.cards.totalIn.subtext:SetText("0 txns")
         statisticsFrame.cards.totalOut.value:SetText("--")
         statisticsFrame.cards.totalOut.subtext:SetText("0 txns")
-        statisticsFrame.cards.bestHour.value:SetText("--")
-        statisticsFrame.cards.bestHour.subtext:SetText("")
+        statisticsFrame.cards.bestDay.value:SetText("--")
+        statisticsFrame.cards.bestDay.subtext:SetText("")
+        -- Clear earning patterns (respect range visibility)
+        local showDaysRow = not (currentRange == "session" or currentRange == "1day")
+        for i = 1, 7 do
+            if showDaysRow then
+                statisticsFrame.dayLabels[i]:Show()
+                statisticsFrame.dayValues[i]:Show()
+            else
+                statisticsFrame.dayLabels[i]:Hide()
+                statisticsFrame.dayValues[i]:Hide()
+            end
+            statisticsFrame.dayValues[i]:SetText("--")
+            statisticsFrame.dayValues[i]:SetTextColor(0.5, 0.5, 0.5, 1)
+        end
+        -- Adjust time periods position
+        local periodYOffset = showDaysRow and -42 or -5
+        local periodValueYOffset = showDaysRow and -55 or -18
+        for i = 1, 4 do
+            statisticsFrame.periodLabels[i]:SetPoint("TOPLEFT", statisticsFrame.periodLabels[i]:GetParent(), "TOPLEFT", (i - 1) * 128 + 5, periodYOffset)
+            statisticsFrame.periodValues[i]:SetPoint("TOPLEFT", statisticsFrame.periodValues[i]:GetParent(), "TOPLEFT", (i - 1) * 128 + 5, periodValueYOffset)
+            statisticsFrame.periodValues[i]:SetText("--")
+            statisticsFrame.periodValues[i]:SetTextColor(0.5, 0.5, 0.5, 1)
+        end
         return
     end
 
@@ -738,31 +793,46 @@ function GoldTracker:UpdateStatisticsDisplay()
     statisticsFrame.cards.totalOut.value:SetTextColor(COLORS.negative[1], COLORS.negative[2], COLORS.negative[3], 1)
     statisticsFrame.cards.totalOut.subtext:SetText(stats.totalOutCount .. " txns")
 
-    -- Best Hour
-    if stats.bestHour then
-        local hour = stats.bestHour
-        local nextHour = math.mod(hour + 1, 24)
+    -- Best Day or Best Time (depending on range)
+    local useTimePeriod = (currentRange == "session" or currentRange == "1day")
 
-        -- Format start hour
-        local suffix1 = hour >= 12 and "pm" or "am"
-        local displayHour1 = hour
-        if hour > 12 then displayHour1 = hour - 12 end
-        if hour == 0 then displayHour1 = 12 end
-
-        -- Format end hour
-        local suffix2 = nextHour >= 12 and "pm" or "am"
-        local displayHour2 = nextHour
-        if nextHour > 12 then displayHour2 = nextHour - 12 end
-        if nextHour == 0 then displayHour2 = 12 end
-
-        local rateGold = math.floor(stats.bestHourRate / 10000)
-        local rateSilver = math.floor(math.mod(math.abs(stats.bestHourRate), 10000) / 100)
-        local rateSign = stats.bestHourRate >= 0 and "+" or "-"
-        statisticsFrame.cards.bestHour.value:SetText(rateSign .. math.abs(rateGold) .. "g/hr")
-        statisticsFrame.cards.bestHour.subtext:SetText(displayHour1 .. suffix1 .. "-" .. displayHour2 .. suffix2)
+    if useTimePeriod then
+        -- Show best time period for short ranges
+        statisticsFrame.cards.bestDay.label:SetText("BEST TIME")
+        if stats.bestPeriod then
+            local totalGold = math.floor(math.abs(stats.bestPeriodTotal) / 10000)
+            local sign = stats.bestPeriodTotal >= 0 and "+" or "-"
+            statisticsFrame.cards.bestDay.value:SetText(sign .. totalGold .. "g")
+            statisticsFrame.cards.bestDay.subtext:SetText(stats.bestPeriodName)
+            if stats.bestPeriodTotal >= 0 then
+                statisticsFrame.cards.bestDay.value:SetTextColor(COLORS.positive[1], COLORS.positive[2], COLORS.positive[3], 1)
+            else
+                statisticsFrame.cards.bestDay.value:SetTextColor(COLORS.negative[1], COLORS.negative[2], COLORS.negative[3], 1)
+            end
+        else
+            statisticsFrame.cards.bestDay.value:SetText("--")
+            statisticsFrame.cards.bestDay.subtext:SetText("")
+        end
     else
-        statisticsFrame.cards.bestHour.value:SetText("--")
-        statisticsFrame.cards.bestHour.subtext:SetText("")
+        -- Show best day for longer ranges
+        statisticsFrame.cards.bestDay.label:SetText("BEST DAY")
+        if stats.bestDay then
+            local dayNames = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"}
+            local dayName = dayNames[stats.bestDay]
+
+            local totalGold = math.floor(math.abs(stats.bestDayTotal) / 10000)
+            local sign = stats.bestDayTotal >= 0 and "+" or "-"
+            statisticsFrame.cards.bestDay.value:SetText(sign .. totalGold .. "g")
+            statisticsFrame.cards.bestDay.subtext:SetText(dayName)
+            if stats.bestDayTotal >= 0 then
+                statisticsFrame.cards.bestDay.value:SetTextColor(COLORS.positive[1], COLORS.positive[2], COLORS.positive[3], 1)
+            else
+                statisticsFrame.cards.bestDay.value:SetTextColor(COLORS.negative[1], COLORS.negative[2], COLORS.negative[3], 1)
+            end
+        else
+            statisticsFrame.cards.bestDay.value:SetText("--")
+            statisticsFrame.cards.bestDay.subtext:SetText("")
+        end
     end
 
     -- Update source breakdown
@@ -904,30 +974,79 @@ function GoldTracker:UpdateStatisticsDisplay()
         end
     end
 
-    -- Update earning patterns
-    local bestDays = self:GetBestDays(stats)
-    local daysStr = ""
-    for i = 1, math.min(3, table.getn(bestDays)) do
-        local day = bestDays[i]
-        local avgGold = math.floor(day.avg / 10000)
-        local sign = day.avg >= 0 and "+" or ""
-        if i > 1 then daysStr = daysStr .. "  " end
-        daysStr = daysStr .. day.name .. " (" .. sign .. avgGold .. "g avg)"
-    end
-    if daysStr == "" then daysStr = "Not enough data" end
-    statisticsFrame.bestDaysText:SetText(daysStr)
+    -- Update earning patterns - Days of week (only show for longer ranges)
+    local showDaysRow = not (currentRange == "session" or currentRange == "1day")
 
-    local bestHours = self:GetBestHours(stats)
-    local hoursStr = ""
-    for i = 1, math.min(3, table.getn(bestHours)) do
-        local hour = bestHours[i]
-        local avgGold = math.floor(hour.avg / 10000)
-        local sign = hour.avg >= 0 and "+" or ""
-        if i > 1 then hoursStr = hoursStr .. "  " end
-        hoursStr = hoursStr .. hour.display .. " (" .. sign .. avgGold .. "g avg)"
+    for i = 1, 7 do
+        if showDaysRow then
+            statisticsFrame.dayLabels[i]:Show()
+            statisticsFrame.dayValues[i]:Show()
+
+            local dayData = stats.byDayOfWeek[i]
+            local total = dayData and dayData.total or 0
+            local gold = math.floor(math.abs(total) / 10000)
+            local sign = total >= 0 and "+" or "-"
+
+            if dayData and dayData.count > 0 then
+                statisticsFrame.dayValues[i]:SetText(sign .. gold .. "g")
+                if total >= 0 then
+                    statisticsFrame.dayValues[i]:SetTextColor(COLORS.positive[1], COLORS.positive[2], COLORS.positive[3], 1)
+                else
+                    statisticsFrame.dayValues[i]:SetTextColor(COLORS.negative[1], COLORS.negative[2], COLORS.negative[3], 1)
+                end
+            else
+                statisticsFrame.dayValues[i]:SetText("--")
+                statisticsFrame.dayValues[i]:SetTextColor(0.5, 0.5, 0.5, 1)
+            end
+        else
+            statisticsFrame.dayLabels[i]:Hide()
+            statisticsFrame.dayValues[i]:Hide()
+        end
     end
-    if hoursStr == "" then hoursStr = "Not enough data" end
-    statisticsFrame.bestHoursText:SetText(hoursStr)
+
+    -- Adjust time periods position based on whether days row is shown
+    local periodYOffset = showDaysRow and -42 or -5
+    local periodValueYOffset = showDaysRow and -55 or -18
+    for i = 1, 4 do
+        statisticsFrame.periodLabels[i]:SetPoint("TOPLEFT", statisticsFrame.periodLabels[i]:GetParent(), "TOPLEFT", (i - 1) * 128 + 5, periodYOffset)
+        statisticsFrame.periodValues[i]:SetPoint("TOPLEFT", statisticsFrame.periodValues[i]:GetParent(), "TOPLEFT", (i - 1) * 128 + 5, periodValueYOffset)
+    end
+
+    -- Update earning patterns - Time periods (total profit)
+    -- Night: 0-5 (12am-6am), Morning: 6-11 (6am-12pm), Afternoon: 12-17 (12pm-6pm), Evening: 18-23 (6pm-12am)
+    local periods = {
+        {startHour = 0, endHour = 5},   -- Night
+        {startHour = 6, endHour = 11},  -- Morning
+        {startHour = 12, endHour = 17}, -- Afternoon
+        {startHour = 18, endHour = 23}, -- Evening
+    }
+
+    for i, period in ipairs(periods) do
+        local total = 0
+        local hasData = false
+        for hour = period.startHour, period.endHour do
+            local hourData = stats.byHourOfDay[hour]
+            if hourData and hourData.count > 0 then
+                total = total + hourData.total
+                hasData = true
+            end
+        end
+
+        local gold = math.floor(math.abs(total) / 10000)
+        local sign = total >= 0 and "+" or "-"
+
+        if hasData then
+            statisticsFrame.periodValues[i]:SetText(sign .. gold .. "g")
+            if total >= 0 then
+                statisticsFrame.periodValues[i]:SetTextColor(COLORS.positive[1], COLORS.positive[2], COLORS.positive[3], 1)
+            else
+                statisticsFrame.periodValues[i]:SetTextColor(COLORS.negative[1], COLORS.negative[2], COLORS.negative[3], 1)
+            end
+        else
+            statisticsFrame.periodValues[i]:SetText("--")
+            statisticsFrame.periodValues[i]:SetTextColor(0.5, 0.5, 0.5, 1)
+        end
+    end
 end
 
 -- Filter: Switch to transactions tab filtered by source
@@ -1895,8 +2014,8 @@ local function CreateStatisticsFrame()
     statisticsFrame.cards.totalOut = CreateSummaryCard(content, (cardWidth + cardSpacing) * 2, cardWidth)
     statisticsFrame.cards.totalOut.label:SetText("TOTAL OUT")
 
-    statisticsFrame.cards.bestHour = CreateSummaryCard(content, (cardWidth + cardSpacing) * 3, cardWidth)
-    statisticsFrame.cards.bestHour.label:SetText("BEST HOUR")
+    statisticsFrame.cards.bestDay = CreateSummaryCard(content, (cardWidth + cardSpacing) * 3, cardWidth)
+    statisticsFrame.cards.bestDay.label:SetText("BEST DAY")
 
     yOffset = -58
 
@@ -2206,7 +2325,7 @@ local function CreateStatisticsFrame()
 
     local patternsFrame = CreateFrame("Frame", nil, content)
     patternsFrame:SetWidth(520)
-    patternsFrame:SetHeight(40)
+    patternsFrame:SetHeight(72)
     patternsFrame:SetPoint("TOPLEFT", content, "TOPLEFT", 0, yOffset)
 
     local patternsBg = patternsFrame:CreateTexture(nil, "BACKGROUND")
@@ -2214,23 +2333,46 @@ local function CreateStatisticsFrame()
     patternsBg:SetAllPoints()
     patternsBg:SetVertexColor(0.05, 0.05, 0.05, 0.5)
 
-    local bestDaysLabel = patternsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    bestDaysLabel:SetPoint("TOPLEFT", patternsFrame, "TOPLEFT", 5, -5)
-    bestDaysLabel:SetText("Best Days:")
-    bestDaysLabel:SetTextColor(0.6, 0.6, 0.6, 1)
+    -- Days of week row
+    local dayNames = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"}
+    local dayWidth = 73
+    statisticsFrame.dayLabels = {}
+    statisticsFrame.dayValues = {}
 
-    statisticsFrame.bestDaysText = patternsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    statisticsFrame.bestDaysText:SetPoint("TOPLEFT", patternsFrame, "TOPLEFT", 70, -5)
-    statisticsFrame.bestDaysText:SetTextColor(1, 1, 1, 1)
+    for i, dayName in ipairs(dayNames) do
+        local xPos = (i - 1) * dayWidth + 5
 
-    local bestHoursLabel = patternsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    bestHoursLabel:SetPoint("TOPLEFT", patternsFrame, "TOPLEFT", 5, -22)
-    bestHoursLabel:SetText("Best Hours:")
-    bestHoursLabel:SetTextColor(0.6, 0.6, 0.6, 1)
+        local label = patternsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        label:SetPoint("TOPLEFT", patternsFrame, "TOPLEFT", xPos, -5)
+        label:SetText(dayName)
+        label:SetTextColor(0.6, 0.6, 0.6, 1)
+        statisticsFrame.dayLabels[i] = label
 
-    statisticsFrame.bestHoursText = patternsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    statisticsFrame.bestHoursText:SetPoint("TOPLEFT", patternsFrame, "TOPLEFT", 70, -22)
-    statisticsFrame.bestHoursText:SetTextColor(1, 1, 1, 1)
+        local value = patternsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        value:SetPoint("TOPLEFT", patternsFrame, "TOPLEFT", xPos, -18)
+        value:SetTextColor(1, 1, 1, 1)
+        statisticsFrame.dayValues[i] = value
+    end
+
+    -- Time periods row
+    local periodNames = {"Night (12a-6a)", "Morning (6a-12p)", "Afternoon (12p-6p)", "Evening (6p-12a)"}
+    local periodWidth = 128
+    statisticsFrame.periodLabels = {}
+    statisticsFrame.periodValues = {}
+
+    for i, periodName in ipairs(periodNames) do
+        local xPos = (i - 1) * periodWidth + 5
+
+        local label = patternsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        label:SetPoint("TOPLEFT", patternsFrame, "TOPLEFT", xPos, -42)
+        label:SetText(periodName)
+        label:SetTextColor(0.6, 0.6, 0.6, 1)
+        statisticsFrame.periodLabels[i] = label
+
+        local value = patternsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        value:SetPoint("TOPLEFT", patternsFrame, "TOPLEFT", xPos, -55)
+        statisticsFrame.periodValues[i] = value
+    end
 end
 
 -- UI: Create main frame
