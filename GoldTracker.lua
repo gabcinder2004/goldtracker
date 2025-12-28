@@ -1491,6 +1491,319 @@ local function SwitchTab(tabKey)
     end
 end
 
+-- UI: Create transactions frame content (separated to avoid upvalue limit)
+local function CreateTransactionsFrame()
+    -- Transactions frame (hidden by default)
+    transactionsFrame = CreateFrame("Frame", nil, mainFrame)
+    transactionsFrame:SetPoint("TOPLEFT", mainFrame, "TOPLEFT", 10, -CHART_TOP_OFFSET)
+    transactionsFrame:SetPoint("BOTTOMRIGHT", mainFrame, "BOTTOMRIGHT", -10, 8)
+    transactionsFrame:Hide()
+
+    -- Filter bar container
+    transactionsFrame.filterBar = CreateFrame("Frame", nil, transactionsFrame)
+    transactionsFrame.filterBar:SetPoint("TOPLEFT", transactionsFrame, "TOPLEFT", 0, 0)
+    transactionsFrame.filterBar:SetPoint("TOPRIGHT", transactionsFrame, "TOPRIGHT", 0, 0)
+    transactionsFrame.filterBar:SetHeight(28)
+
+    -- Create filter toggle buttons
+    transactionsFrame.filterButtons = {}
+    local filterBtnSize = 24
+    local filterSpacing = 4
+
+    for i, source in ipairs(SOURCES) do
+        local btn = CreateFrame("Button", nil, transactionsFrame.filterBar)
+        btn:SetWidth(filterBtnSize)
+        btn:SetHeight(filterBtnSize)
+        btn:SetPoint("TOPLEFT", transactionsFrame.filterBar, "TOPLEFT", (i - 1) * (filterBtnSize + filterSpacing), -2)
+
+        btn.icon = btn:CreateTexture(nil, "ARTWORK")
+        btn.icon:SetTexture(source.icon)
+        btn.icon:SetPoint("CENTER", 0, 0)
+        btn.icon:SetWidth(filterBtnSize - 4)
+        btn.icon:SetHeight(filterBtnSize - 4)
+
+        btn.sourceKey = source.key
+        btn.sourceLabel = source.label
+
+        btn.UpdateState = function(self)
+            if self.sourceKey == "all" then
+                local allActive = true
+                for key, active in pairs(activeFilters) do
+                    if not active then allActive = false break end
+                end
+                if allActive then
+                    self.icon:SetVertexColor(1, 0.843, 0, 1)
+                else
+                    self.icon:SetVertexColor(0.4, 0.4, 0.4, 1)
+                end
+            else
+                if activeFilters[self.sourceKey] then
+                    self.icon:SetVertexColor(1, 1, 1, 1)
+                else
+                    self.icon:SetVertexColor(0.3, 0.3, 0.3, 1)
+                end
+            end
+        end
+
+        btn:SetScript("OnClick", function()
+            if this.sourceKey == "all" then
+                local allActive = true
+                for key, active in pairs(activeFilters) do
+                    if not active then allActive = false break end
+                end
+                for j, s in ipairs(SOURCES) do
+                    if s.key ~= "all" then
+                        activeFilters[s.key] = not allActive
+                    end
+                end
+            else
+                activeFilters[this.sourceKey] = not activeFilters[this.sourceKey]
+            end
+            for key, filterBtn in pairs(transactionsFrame.filterButtons) do
+                filterBtn:UpdateState()
+            end
+            currentPage = 1
+            GoldTracker:UpdateTransactionList()
+        end)
+
+        btn:SetScript("OnEnter", function()
+            GameTooltip:SetOwner(this, "ANCHOR_BOTTOM")
+            GameTooltip:SetText(this.sourceLabel, 1, 1, 1)
+            GameTooltip:Show()
+        end)
+
+        btn:SetScript("OnLeave", function()
+            GameTooltip:Hide()
+        end)
+
+        transactionsFrame.filterButtons[source.key] = btn
+        btn:UpdateState()
+    end
+
+    -- Detail filter indicator
+    transactionsFrame.detailFilterFrame = CreateFrame("Frame", nil, transactionsFrame.filterBar)
+    transactionsFrame.detailFilterFrame:SetPoint("LEFT", transactionsFrame.filterBar, "LEFT", 320, 0)
+    transactionsFrame.detailFilterFrame:SetWidth(120)
+    transactionsFrame.detailFilterFrame:SetHeight(20)
+    transactionsFrame.detailFilterFrame:Hide()
+
+    transactionsFrame.detailFilterFrame.bg = transactionsFrame.detailFilterFrame:CreateTexture(nil, "BACKGROUND")
+    transactionsFrame.detailFilterFrame.bg:SetTexture("Interface\\Buttons\\WHITE8X8")
+    transactionsFrame.detailFilterFrame.bg:SetAllPoints()
+    transactionsFrame.detailFilterFrame.bg:SetVertexColor(0.15, 0.15, 0.15, 0.9)
+
+    transactionsFrame.detailFilterFrame.text = transactionsFrame.detailFilterFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    transactionsFrame.detailFilterFrame.text:SetPoint("LEFT", transactionsFrame.detailFilterFrame, "LEFT", 5, 0)
+    transactionsFrame.detailFilterFrame.text:SetWidth(90)
+    transactionsFrame.detailFilterFrame.text:SetJustifyH("LEFT")
+    transactionsFrame.detailFilterFrame.text:SetTextColor(1, 0.843, 0, 1)
+
+    transactionsFrame.detailFilterFrame.clearBtn = CreateFrame("Button", nil, transactionsFrame.detailFilterFrame)
+    transactionsFrame.detailFilterFrame.clearBtn:SetWidth(14)
+    transactionsFrame.detailFilterFrame.clearBtn:SetHeight(14)
+    transactionsFrame.detailFilterFrame.clearBtn:SetPoint("RIGHT", transactionsFrame.detailFilterFrame, "RIGHT", -3, 0)
+
+    transactionsFrame.detailFilterFrame.clearBtn.text = transactionsFrame.detailFilterFrame.clearBtn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    transactionsFrame.detailFilterFrame.clearBtn.text:SetPoint("CENTER", 0, 0)
+    transactionsFrame.detailFilterFrame.clearBtn.text:SetText("x")
+    transactionsFrame.detailFilterFrame.clearBtn.text:SetTextColor(0.8, 0.8, 0.8, 1)
+
+    transactionsFrame.detailFilterFrame.clearBtn:SetScript("OnClick", function()
+        detailFilter = nil
+        for i, source in ipairs(SOURCES) do
+            if source.key ~= "all" then
+                activeFilters[source.key] = true
+            end
+        end
+        for key, btn in pairs(transactionsFrame.filterButtons) do
+            btn:UpdateState()
+        end
+        transactionsFrame.detailFilterFrame:Hide()
+        currentPage = 1
+        GoldTracker:UpdateTransactionList()
+    end)
+
+    transactionsFrame.detailFilterFrame.clearBtn:SetScript("OnEnter", function()
+        this.text:SetTextColor(1, 0.843, 0, 1)
+    end)
+
+    transactionsFrame.detailFilterFrame.clearBtn:SetScript("OnLeave", function()
+        this.text:SetTextColor(0.8, 0.8, 0.8, 1)
+    end)
+
+    -- Table container
+    transactionsFrame.tableFrame = CreateFrame("Frame", nil, transactionsFrame)
+    transactionsFrame.tableFrame:SetPoint("TOPLEFT", transactionsFrame.filterBar, "BOTTOMLEFT", 0, -4)
+    transactionsFrame.tableFrame:SetPoint("BOTTOMRIGHT", transactionsFrame, "BOTTOMRIGHT", 0, 24)
+
+    local tableBg = transactionsFrame.tableFrame:CreateTexture(nil, "BACKGROUND")
+    tableBg:SetTexture("Interface\\Buttons\\WHITE8X8")
+    tableBg:SetAllPoints()
+    tableBg:SetVertexColor(0.05, 0.05, 0.05, 0.5)
+
+    -- Table column headers
+    local colWidths = {75, 80, 65, 115, 65}
+    local colNames = {"Time", "Amount", "Source", "Detail", "Balance"}
+    local colPositions = {0, 75, 155, 220, 345}
+
+    transactionsFrame.headers = {}
+    for i, name in ipairs(colNames) do
+        local header = transactionsFrame.tableFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        header:SetPoint("TOPLEFT", transactionsFrame.tableFrame, "TOPLEFT", colPositions[i], 0)
+        header:SetWidth(colWidths[i])
+        header:SetJustifyH("LEFT")
+        header:SetText(name)
+        header:SetTextColor(0.8, 0.8, 0.8, 1)
+        transactionsFrame.headers[i] = header
+    end
+
+    local headerLine = transactionsFrame.tableFrame:CreateTexture(nil, "ARTWORK")
+    headerLine:SetTexture("Interface\\Buttons\\WHITE8X8")
+    headerLine:SetHeight(1)
+    headerLine:SetPoint("TOPLEFT", transactionsFrame.tableFrame, "TOPLEFT", 0, -14)
+    headerLine:SetPoint("TOPRIGHT", transactionsFrame.tableFrame, "TOPRIGHT", 0, -14)
+    headerLine:SetVertexColor(0.3, 0.3, 0.3, 1)
+
+    -- Create row frames
+    transactionsFrame.rows = {}
+    local rowHeight = 14
+    local rowStartY = -18
+
+    for i = 1, TRANSACTIONS_PER_PAGE do
+        local row = {}
+        local y = rowStartY - ((i - 1) * rowHeight)
+
+        row.time = transactionsFrame.tableFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        row.time:SetPoint("TOPLEFT", transactionsFrame.tableFrame, "TOPLEFT", colPositions[1], y)
+        row.time:SetWidth(colWidths[1])
+        row.time:SetJustifyH("LEFT")
+        row.time:SetTextColor(0.7, 0.7, 0.7, 1)
+
+        row.amount = transactionsFrame.tableFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        row.amount:SetPoint("TOPLEFT", transactionsFrame.tableFrame, "TOPLEFT", colPositions[2], y)
+        row.amount:SetWidth(colWidths[2])
+        row.amount:SetJustifyH("LEFT")
+
+        row.source = transactionsFrame.tableFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        row.source:SetPoint("TOPLEFT", transactionsFrame.tableFrame, "TOPLEFT", colPositions[3], y)
+        row.source:SetWidth(colWidths[3])
+        row.source:SetJustifyH("LEFT")
+        row.source:SetTextColor(0.6, 0.6, 0.6, 1)
+
+        row.detail = transactionsFrame.tableFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        row.detail:SetPoint("TOPLEFT", transactionsFrame.tableFrame, "TOPLEFT", colPositions[4], y)
+        row.detail:SetWidth(colWidths[4])
+        row.detail:SetHeight(rowHeight)
+        row.detail:SetJustifyH("LEFT")
+        row.detail:SetTextColor(0.6, 0.6, 0.6, 1)
+        row.detailFull = nil
+
+        row.detailHover = CreateFrame("Button", nil, transactionsFrame.tableFrame)
+        row.detailHover:SetPoint("TOPLEFT", transactionsFrame.tableFrame, "TOPLEFT", colPositions[4], y)
+        row.detailHover:SetWidth(colWidths[4])
+        row.detailHover:SetHeight(rowHeight)
+        row.detailHover.row = row
+        row.detailHover:SetScript("OnEnter", function()
+            if this.row.detailFull and this.row.detailFull ~= "" then
+                GameTooltip:SetOwner(this, "ANCHOR_CURSOR")
+                GameTooltip:SetText(this.row.detailFull, 1, 1, 1)
+                GameTooltip:Show()
+            end
+        end)
+        row.detailHover:SetScript("OnLeave", function()
+            GameTooltip:Hide()
+        end)
+
+        row.balance = transactionsFrame.tableFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        row.balance:SetPoint("TOPLEFT", transactionsFrame.tableFrame, "TOPLEFT", colPositions[5], y)
+        row.balance:SetWidth(colWidths[5])
+        row.balance:SetJustifyH("LEFT")
+
+        row.Show = function(self)
+            self.time:Show()
+            self.amount:Show()
+            self.source:Show()
+            self.detail:Show()
+            self.detailHover:Show()
+            self.balance:Show()
+        end
+
+        row.Hide = function(self)
+            self.time:Hide()
+            self.amount:Hide()
+            self.source:Hide()
+            self.detail:Hide()
+            self.detailHover:Hide()
+            self.balance:Hide()
+        end
+
+        transactionsFrame.rows[i] = row
+    end
+
+    -- Pagination container
+    transactionsFrame.pagination = CreateFrame("Frame", nil, transactionsFrame)
+    transactionsFrame.pagination:SetPoint("BOTTOMLEFT", transactionsFrame, "BOTTOMLEFT", 0, 0)
+    transactionsFrame.pagination:SetPoint("BOTTOMRIGHT", transactionsFrame, "BOTTOMRIGHT", 0, 0)
+    transactionsFrame.pagination:SetHeight(20)
+
+    transactionsFrame.pageText = transactionsFrame.pagination:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    transactionsFrame.pageText:SetPoint("LEFT", transactionsFrame.pagination, "LEFT", 0, 0)
+    transactionsFrame.pageText:SetTextColor(0.7, 0.7, 0.7, 1)
+    transactionsFrame.pageText:SetText("Page 1 of 1")
+
+    transactionsFrame.nextBtn = CreateFrame("Button", nil, transactionsFrame.pagination)
+    transactionsFrame.nextBtn:SetWidth(50)
+    transactionsFrame.nextBtn:SetHeight(18)
+    transactionsFrame.nextBtn:SetPoint("RIGHT", transactionsFrame.pagination, "RIGHT", 0, 0)
+
+    transactionsFrame.nextBtn.text = transactionsFrame.nextBtn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    transactionsFrame.nextBtn.text:SetPoint("CENTER", 0, 0)
+    transactionsFrame.nextBtn.text:SetText("Next >")
+
+    transactionsFrame.nextBtn:SetScript("OnClick", function()
+        local data = InitCharacterData()
+        if not data or not data.transactions then return end
+        local filtered = GoldTracker:GetFilteredTransactions()
+        local totalPages = math.ceil(table.getn(filtered) / TRANSACTIONS_PER_PAGE)
+        if currentPage < totalPages then
+            currentPage = currentPage + 1
+            GoldTracker:UpdateTransactionList()
+        end
+    end)
+
+    transactionsFrame.nextBtn:SetScript("OnEnter", function()
+        this.text:SetTextColor(1, 0.843, 0, 1)
+    end)
+
+    transactionsFrame.nextBtn:SetScript("OnLeave", function()
+        this.text:SetTextColor(1, 1, 1, 1)
+    end)
+
+    transactionsFrame.prevBtn = CreateFrame("Button", nil, transactionsFrame.pagination)
+    transactionsFrame.prevBtn:SetWidth(50)
+    transactionsFrame.prevBtn:SetHeight(18)
+    transactionsFrame.prevBtn:SetPoint("RIGHT", transactionsFrame.nextBtn, "LEFT", -10, 0)
+
+    transactionsFrame.prevBtn.text = transactionsFrame.prevBtn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    transactionsFrame.prevBtn.text:SetPoint("CENTER", 0, 0)
+    transactionsFrame.prevBtn.text:SetText("< Prev")
+
+    transactionsFrame.prevBtn:SetScript("OnClick", function()
+        if currentPage > 1 then
+            currentPage = currentPage - 1
+            GoldTracker:UpdateTransactionList()
+        end
+    end)
+
+    transactionsFrame.prevBtn:SetScript("OnEnter", function()
+        this.text:SetTextColor(1, 0.843, 0, 1)
+    end)
+
+    transactionsFrame.prevBtn:SetScript("OnLeave", function()
+        this.text:SetTextColor(1, 1, 1, 1)
+    end)
+end
+
 -- UI: Create statistics frame content (separated to avoid upvalue limit)
 local function CreateStatisticsFrame()
     -- Statistics frame (hidden by default)
@@ -2276,336 +2589,8 @@ local function CreateMainFrame()
         end
     end)
 
-    -- Transactions frame (hidden by default)
-    transactionsFrame = CreateFrame("Frame", nil, mainFrame)
-    transactionsFrame:SetPoint("TOPLEFT", mainFrame, "TOPLEFT", 10, -CHART_TOP_OFFSET)
-    transactionsFrame:SetPoint("BOTTOMRIGHT", mainFrame, "BOTTOMRIGHT", -10, 8)
-    transactionsFrame:Hide()
-
-    -- Filter bar container
-    transactionsFrame.filterBar = CreateFrame("Frame", nil, transactionsFrame)
-    transactionsFrame.filterBar:SetPoint("TOPLEFT", transactionsFrame, "TOPLEFT", 0, 0)
-    transactionsFrame.filterBar:SetPoint("TOPRIGHT", transactionsFrame, "TOPRIGHT", 0, 0)
-    transactionsFrame.filterBar:SetHeight(28)
-
-    -- Create filter toggle buttons
-    transactionsFrame.filterButtons = {}
-    local filterBtnSize = 24
-    local filterSpacing = 4
-
-    for i, source in ipairs(SOURCES) do
-        local btn = CreateFrame("Button", nil, transactionsFrame.filterBar)
-        btn:SetWidth(filterBtnSize)
-        btn:SetHeight(filterBtnSize)
-        btn:SetPoint("TOPLEFT", transactionsFrame.filterBar, "TOPLEFT", (i - 1) * (filterBtnSize + filterSpacing), -2)
-
-        -- Icon
-        btn.icon = btn:CreateTexture(nil, "ARTWORK")
-        btn.icon:SetTexture(source.icon)
-        btn.icon:SetPoint("CENTER", 0, 0)
-        btn.icon:SetWidth(filterBtnSize - 4)
-        btn.icon:SetHeight(filterBtnSize - 4)
-
-        btn.sourceKey = source.key
-        btn.sourceLabel = source.label  -- Store label for tooltip
-
-        -- Update visual state
-        btn.UpdateState = function(self)
-            if self.sourceKey == "all" then
-                -- All button is highlighted if all filters are active
-                local allActive = true
-                for key, active in pairs(activeFilters) do
-                    if not active then allActive = false break end
-                end
-                if allActive then
-                    self.icon:SetVertexColor(1, 0.843, 0, 1)
-                else
-                    self.icon:SetVertexColor(0.4, 0.4, 0.4, 1)
-                end
-            else
-                if activeFilters[self.sourceKey] then
-                    self.icon:SetVertexColor(1, 1, 1, 1)
-                else
-                    self.icon:SetVertexColor(0.3, 0.3, 0.3, 1)
-                end
-            end
-        end
-
-        btn:SetScript("OnClick", function()
-            if this.sourceKey == "all" then
-                -- Toggle all filters
-                local allActive = true
-                for key, active in pairs(activeFilters) do
-                    if not active then allActive = false break end
-                end
-                for j, s in ipairs(SOURCES) do
-                    if s.key ~= "all" then
-                        activeFilters[s.key] = not allActive
-                    end
-                end
-            else
-                activeFilters[this.sourceKey] = not activeFilters[this.sourceKey]
-            end
-
-            -- Update all button states
-            for key, filterBtn in pairs(transactionsFrame.filterButtons) do
-                filterBtn:UpdateState()
-            end
-
-            -- Reset to page 1 and refresh
-            currentPage = 1
-            GoldTracker:UpdateTransactionList()
-        end)
-
-        btn:SetScript("OnEnter", function()
-            GameTooltip:SetOwner(this, "ANCHOR_BOTTOM")
-            GameTooltip:SetText(this.sourceLabel, 1, 1, 1)
-            GameTooltip:Show()
-        end)
-
-        btn:SetScript("OnLeave", function()
-            GameTooltip:Hide()
-        end)
-
-        transactionsFrame.filterButtons[source.key] = btn
-        btn:UpdateState()
-    end
-
-    -- Detail filter indicator (shows when filtering by specific player/item)
-    transactionsFrame.detailFilterFrame = CreateFrame("Frame", nil, transactionsFrame.filterBar)
-    transactionsFrame.detailFilterFrame:SetPoint("LEFT", transactionsFrame.filterBar, "LEFT", 320, 0)
-    transactionsFrame.detailFilterFrame:SetWidth(120)
-    transactionsFrame.detailFilterFrame:SetHeight(20)
-    transactionsFrame.detailFilterFrame:Hide()
-
-    transactionsFrame.detailFilterFrame.bg = transactionsFrame.detailFilterFrame:CreateTexture(nil, "BACKGROUND")
-    transactionsFrame.detailFilterFrame.bg:SetTexture("Interface\\Buttons\\WHITE8X8")
-    transactionsFrame.detailFilterFrame.bg:SetAllPoints()
-    transactionsFrame.detailFilterFrame.bg:SetVertexColor(0.15, 0.15, 0.15, 0.9)
-
-    transactionsFrame.detailFilterFrame.text = transactionsFrame.detailFilterFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    transactionsFrame.detailFilterFrame.text:SetPoint("LEFT", transactionsFrame.detailFilterFrame, "LEFT", 5, 0)
-    transactionsFrame.detailFilterFrame.text:SetWidth(90)
-    transactionsFrame.detailFilterFrame.text:SetJustifyH("LEFT")
-    transactionsFrame.detailFilterFrame.text:SetTextColor(1, 0.843, 0, 1)
-
-    -- Clear button
-    transactionsFrame.detailFilterFrame.clearBtn = CreateFrame("Button", nil, transactionsFrame.detailFilterFrame)
-    transactionsFrame.detailFilterFrame.clearBtn:SetWidth(14)
-    transactionsFrame.detailFilterFrame.clearBtn:SetHeight(14)
-    transactionsFrame.detailFilterFrame.clearBtn:SetPoint("RIGHT", transactionsFrame.detailFilterFrame, "RIGHT", -3, 0)
-
-    transactionsFrame.detailFilterFrame.clearBtn.text = transactionsFrame.detailFilterFrame.clearBtn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    transactionsFrame.detailFilterFrame.clearBtn.text:SetPoint("CENTER", 0, 0)
-    transactionsFrame.detailFilterFrame.clearBtn.text:SetText("x")
-    transactionsFrame.detailFilterFrame.clearBtn.text:SetTextColor(0.8, 0.8, 0.8, 1)
-
-    transactionsFrame.detailFilterFrame.clearBtn:SetScript("OnClick", function()
-        detailFilter = nil
-        -- Re-enable all filters
-        for i, source in ipairs(SOURCES) do
-            if source.key ~= "all" then
-                activeFilters[source.key] = true
-            end
-        end
-        for key, btn in pairs(transactionsFrame.filterButtons) do
-            btn:UpdateState()
-        end
-        transactionsFrame.detailFilterFrame:Hide()
-        currentPage = 1
-        GoldTracker:UpdateTransactionList()
-    end)
-
-    transactionsFrame.detailFilterFrame.clearBtn:SetScript("OnEnter", function()
-        this.text:SetTextColor(1, 0.843, 0, 1)
-    end)
-
-    transactionsFrame.detailFilterFrame.clearBtn:SetScript("OnLeave", function()
-        this.text:SetTextColor(0.8, 0.8, 0.8, 1)
-    end)
-
-    -- Table container
-    transactionsFrame.tableFrame = CreateFrame("Frame", nil, transactionsFrame)
-    transactionsFrame.tableFrame:SetPoint("TOPLEFT", transactionsFrame.filterBar, "BOTTOMLEFT", 0, -4)
-    transactionsFrame.tableFrame:SetPoint("BOTTOMRIGHT", transactionsFrame, "BOTTOMRIGHT", 0, 24)
-
-    -- Table background
-    local tableBg = transactionsFrame.tableFrame:CreateTexture(nil, "BACKGROUND")
-    tableBg:SetTexture("Interface\\Buttons\\WHITE8X8")
-    tableBg:SetAllPoints()
-    tableBg:SetVertexColor(0.05, 0.05, 0.05, 0.5)
-
-    -- Table column headers
-    local headerY = 0
-    local colWidths = {75, 80, 65, 115, 65}  -- Time, Amount, Source, Detail, Balance
-    local colNames = {"Time", "Amount", "Source", "Detail", "Balance"}
-    local colPositions = {0, 75, 155, 220, 345}
-
-    transactionsFrame.headers = {}
-    for i, name in ipairs(colNames) do
-        local header = transactionsFrame.tableFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-        header:SetPoint("TOPLEFT", transactionsFrame.tableFrame, "TOPLEFT", colPositions[i], 0)
-        header:SetWidth(colWidths[i])
-        header:SetJustifyH("LEFT")
-        header:SetText(name)
-        header:SetTextColor(0.8, 0.8, 0.8, 1)
-        transactionsFrame.headers[i] = header
-    end
-
-    -- Header underline
-    local headerLine = transactionsFrame.tableFrame:CreateTexture(nil, "ARTWORK")
-    headerLine:SetTexture("Interface\\Buttons\\WHITE8X8")
-    headerLine:SetHeight(1)
-    headerLine:SetPoint("TOPLEFT", transactionsFrame.tableFrame, "TOPLEFT", 0, -14)
-    headerLine:SetPoint("TOPRIGHT", transactionsFrame.tableFrame, "TOPRIGHT", 0, -14)
-    headerLine:SetVertexColor(0.3, 0.3, 0.3, 1)
-
-    -- Create row frames
-    transactionsFrame.rows = {}
-    local rowHeight = 14
-    local rowStartY = -18
-
-    for i = 1, TRANSACTIONS_PER_PAGE do
-        local row = {}
-        local y = rowStartY - ((i - 1) * rowHeight)
-
-        -- Time column
-        row.time = transactionsFrame.tableFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-        row.time:SetPoint("TOPLEFT", transactionsFrame.tableFrame, "TOPLEFT", colPositions[1], y)
-        row.time:SetWidth(colWidths[1])
-        row.time:SetJustifyH("LEFT")
-        row.time:SetTextColor(0.7, 0.7, 0.7, 1)
-
-        -- Amount column
-        row.amount = transactionsFrame.tableFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-        row.amount:SetPoint("TOPLEFT", transactionsFrame.tableFrame, "TOPLEFT", colPositions[2], y)
-        row.amount:SetWidth(colWidths[2])
-        row.amount:SetJustifyH("LEFT")
-
-        -- Source column
-        row.source = transactionsFrame.tableFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-        row.source:SetPoint("TOPLEFT", transactionsFrame.tableFrame, "TOPLEFT", colPositions[3], y)
-        row.source:SetWidth(colWidths[3])
-        row.source:SetJustifyH("LEFT")
-        row.source:SetTextColor(0.6, 0.6, 0.6, 1)
-
-        -- Detail column with tooltip hover
-        row.detail = transactionsFrame.tableFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-        row.detail:SetPoint("TOPLEFT", transactionsFrame.tableFrame, "TOPLEFT", colPositions[4], y)
-        row.detail:SetWidth(colWidths[4])
-        row.detail:SetHeight(rowHeight)
-        row.detail:SetJustifyH("LEFT")
-        row.detail:SetTextColor(0.6, 0.6, 0.6, 1)
-        row.detailFull = nil  -- Store full text for tooltip
-
-        -- Hover frame for detail tooltip
-        row.detailHover = CreateFrame("Button", nil, transactionsFrame.tableFrame)
-        row.detailHover:SetPoint("TOPLEFT", transactionsFrame.tableFrame, "TOPLEFT", colPositions[4], y)
-        row.detailHover:SetWidth(colWidths[4])
-        row.detailHover:SetHeight(rowHeight)
-        row.detailHover.row = row
-        row.detailHover:SetScript("OnEnter", function()
-            if this.row.detailFull and this.row.detailFull ~= "" then
-                GameTooltip:SetOwner(this, "ANCHOR_CURSOR")
-                GameTooltip:SetText(this.row.detailFull, 1, 1, 1)
-                GameTooltip:Show()
-            end
-        end)
-        row.detailHover:SetScript("OnLeave", function()
-            GameTooltip:Hide()
-        end)
-
-        -- Balance column
-        row.balance = transactionsFrame.tableFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-        row.balance:SetPoint("TOPLEFT", transactionsFrame.tableFrame, "TOPLEFT", colPositions[5], y)
-        row.balance:SetWidth(colWidths[5])
-        row.balance:SetJustifyH("LEFT")
-
-        row.Show = function(self)
-            self.time:Show()
-            self.amount:Show()
-            self.source:Show()
-            self.detail:Show()
-            self.detailHover:Show()
-            self.balance:Show()
-        end
-
-        row.Hide = function(self)
-            self.time:Hide()
-            self.amount:Hide()
-            self.source:Hide()
-            self.detail:Hide()
-            self.detailHover:Hide()
-            self.balance:Hide()
-        end
-
-        transactionsFrame.rows[i] = row
-    end
-    -- Pagination container
-    transactionsFrame.pagination = CreateFrame("Frame", nil, transactionsFrame)
-    transactionsFrame.pagination:SetPoint("BOTTOMLEFT", transactionsFrame, "BOTTOMLEFT", 0, 0)
-    transactionsFrame.pagination:SetPoint("BOTTOMRIGHT", transactionsFrame, "BOTTOMRIGHT", 0, 0)
-    transactionsFrame.pagination:SetHeight(20)
-
-    -- Pagination: Page indicator
-    transactionsFrame.pageText = transactionsFrame.pagination:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    transactionsFrame.pageText:SetPoint("LEFT", transactionsFrame.pagination, "LEFT", 0, 0)
-    transactionsFrame.pageText:SetTextColor(0.7, 0.7, 0.7, 1)
-    transactionsFrame.pageText:SetText("Page 1 of 1")
-
-    -- Pagination: Next button
-    transactionsFrame.nextBtn = CreateFrame("Button", nil, transactionsFrame.pagination)
-    transactionsFrame.nextBtn:SetWidth(50)
-    transactionsFrame.nextBtn:SetHeight(18)
-    transactionsFrame.nextBtn:SetPoint("RIGHT", transactionsFrame.pagination, "RIGHT", 0, 0)
-
-    transactionsFrame.nextBtn.text = transactionsFrame.nextBtn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    transactionsFrame.nextBtn.text:SetPoint("CENTER", 0, 0)
-    transactionsFrame.nextBtn.text:SetText("Next >")
-
-    transactionsFrame.nextBtn:SetScript("OnClick", function()
-        local data = InitCharacterData()
-        if not data or not data.transactions then return end
-        local filtered = GoldTracker:GetFilteredTransactions()
-        local totalPages = math.ceil(table.getn(filtered) / TRANSACTIONS_PER_PAGE)
-        if currentPage < totalPages then
-            currentPage = currentPage + 1
-            GoldTracker:UpdateTransactionList()
-        end
-    end)
-
-    transactionsFrame.nextBtn:SetScript("OnEnter", function()
-        this.text:SetTextColor(1, 0.843, 0, 1)
-    end)
-
-    transactionsFrame.nextBtn:SetScript("OnLeave", function()
-        this.text:SetTextColor(1, 1, 1, 1)
-    end)
-
-    -- Pagination: Prev button
-    transactionsFrame.prevBtn = CreateFrame("Button", nil, transactionsFrame.pagination)
-    transactionsFrame.prevBtn:SetWidth(50)
-    transactionsFrame.prevBtn:SetHeight(18)
-    transactionsFrame.prevBtn:SetPoint("RIGHT", transactionsFrame.nextBtn, "LEFT", -10, 0)
-
-    transactionsFrame.prevBtn.text = transactionsFrame.prevBtn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    transactionsFrame.prevBtn.text:SetPoint("CENTER", 0, 0)
-    transactionsFrame.prevBtn.text:SetText("< Prev")
-
-    transactionsFrame.prevBtn:SetScript("OnClick", function()
-        if currentPage > 1 then
-            currentPage = currentPage - 1
-            GoldTracker:UpdateTransactionList()
-        end
-    end)
-
-    transactionsFrame.prevBtn:SetScript("OnEnter", function()
-        this.text:SetTextColor(1, 0.843, 0, 1)
-    end)
-
-    transactionsFrame.prevBtn:SetScript("OnLeave", function()
-        this.text:SetTextColor(1, 1, 1, 1)
-    end)
+    -- Create transactions frame (in separate function to avoid upvalue limit)
+    CreateTransactionsFrame()
 
     -- Create statistics frame (in separate function to avoid upvalue limit)
     CreateStatisticsFrame()
