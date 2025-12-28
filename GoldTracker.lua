@@ -29,6 +29,7 @@ local detailFilter = nil  -- Filter by specific detail text (player name, item n
 local transactionsFrame = nil
 local statisticsFrame = nil
 local tabButtons = {}
+local SwitchTab  -- Forward declaration (defined later)
 local lastGold = nil
 local yAxisLabels = {}
 local xAxisLabels = {}
@@ -39,10 +40,8 @@ local miniLineTextures = {}
 local isMinimized = false
 
 -- Constants
-local FRAME_WIDTH = 450
-local FRAME_HEIGHT = 280  -- Increased for tabs
-local STATS_FRAME_WIDTH = 550
-local STATS_FRAME_HEIGHT = 400
+local FRAME_WIDTH = 550
+local FRAME_HEIGHT = 400
 local MINI_WIDTH = 150
 local MINI_HEIGHT = 60
 local CHART_PADDING_LEFT = 55
@@ -80,7 +79,7 @@ local SOURCES = {
     {key = "historical", label = "Historical", icon = "Interface\\Icons\\INV_Misc_PocketWatch_01"},
 }
 
-local TRANSACTIONS_PER_PAGE = 10
+local TRANSACTIONS_PER_PAGE = 18
 
 local RANGES = {
     {key = "session", label = "This Session"},
@@ -501,9 +500,9 @@ function GoldTracker:CalculateStatistics()
     local tradePartnerData = {}
     local auctionItemData = {}
 
-    -- Process all transactions within time range
+    -- Process all transactions within time range (exclude historical synthetic data)
     for i, tx in ipairs(data.transactions) do
-        if tx.timestamp >= cutoff then
+        if tx.timestamp >= cutoff and tx.source ~= "historical" then
             -- Track peak gold
             if tx.balance and tx.balance > stats.peakGold then
                 stats.peakGold = tx.balance
@@ -742,19 +741,25 @@ function GoldTracker:UpdateStatisticsDisplay()
     -- Best Hour
     if stats.bestHour then
         local hour = stats.bestHour
-        local suffix = "am"
-        local displayHour = hour
-        if hour >= 12 then
-            suffix = "pm"
-            if hour > 12 then displayHour = hour - 12 end
-        end
-        if hour == 0 then displayHour = 12 end
+        local nextHour = math.mod(hour + 1, 24)
+
+        -- Format start hour
+        local suffix1 = hour >= 12 and "pm" or "am"
+        local displayHour1 = hour
+        if hour > 12 then displayHour1 = hour - 12 end
+        if hour == 0 then displayHour1 = 12 end
+
+        -- Format end hour
+        local suffix2 = nextHour >= 12 and "pm" or "am"
+        local displayHour2 = nextHour
+        if nextHour > 12 then displayHour2 = nextHour - 12 end
+        if nextHour == 0 then displayHour2 = 12 end
 
         local rateGold = math.floor(stats.bestHourRate / 10000)
         local rateSilver = math.floor(math.mod(math.abs(stats.bestHourRate), 10000) / 100)
         local rateSign = stats.bestHourRate >= 0 and "+" or "-"
         statisticsFrame.cards.bestHour.value:SetText(rateSign .. math.abs(rateGold) .. "g/hr")
-        statisticsFrame.cards.bestHour.subtext:SetText(displayHour .. "-" .. (displayHour + 1) .. suffix)
+        statisticsFrame.cards.bestHour.subtext:SetText(displayHour1 .. suffix1 .. "-" .. displayHour2 .. suffix2)
     else
         statisticsFrame.cards.bestHour.value:SetText("--")
         statisticsFrame.cards.bestHour.subtext:SetText("")
@@ -1440,23 +1445,12 @@ local function CreateTabButton(parent, text, tabKey, xOffset)
 end
 
 -- UI: Switch between tabs
-local function SwitchTab(tabKey)
+SwitchTab = function(tabKey)
     currentTab = tabKey
 
     -- Update tab visuals
     for key, tab in pairs(tabButtons) do
         tab:SetActive(key == tabKey)
-    end
-
-    -- Resize window for statistics tab
-    if mainFrame then
-        if tabKey == "statistics" then
-            mainFrame:SetWidth(STATS_FRAME_WIDTH)
-            mainFrame:SetHeight(STATS_FRAME_HEIGHT)
-        else
-            mainFrame:SetWidth(FRAME_WIDTH)
-            mainFrame:SetHeight(FRAME_HEIGHT)
-        end
     end
 
     -- Show/hide content
@@ -1642,9 +1636,9 @@ local function CreateTransactionsFrame()
     tableBg:SetVertexColor(0.05, 0.05, 0.05, 0.5)
 
     -- Table column headers
-    local colWidths = {75, 80, 65, 115, 65}
+    local colWidths = {90, 85, 60, 200, 85}  -- Time, Amount, Source, Detail, Balance
     local colNames = {"Time", "Amount", "Source", "Detail", "Balance"}
-    local colPositions = {0, 75, 155, 220, 345}
+    local colPositions = {0, 90, 175, 235, 435}
 
     transactionsFrame.headers = {}
     for i, name in ipairs(colNames) do
