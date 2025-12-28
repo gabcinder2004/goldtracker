@@ -16,7 +16,13 @@ local currentTab = "chart"  -- "chart" or "transactions"
 local transactionContext = nil  -- Current context for source detection
 local transactionDetail = nil   -- Detail info (NPC name, player name, etc.)
 local currentMailSender = nil   -- Captured when mail is opened
+local currentMailIsAuction = false  -- Flag for auction house mail
+local currentMailSubject = nil  -- Subject line for extracting item names
 local originalTakeInboxMoney = nil  -- For hooking TakeInboxMoney
+local originalPlaceAuctionBid = nil  -- For hooking auction purchases
+local pendingAuctionItem = nil  -- Item name of pending auction purchase/bid
+local originalRepairAllItems = nil  -- For hooking RepairAllItems
+local pendingRepair = false         -- Flag to track if repair was just initiated
 local activeFilters = {}  -- Which sources are visible
 local currentPage = 1
 local transactionsFrame = nil
@@ -1913,10 +1919,19 @@ GoldTracker:SetScript("OnEvent", function()
         if TakeInboxMoney and not originalTakeInboxMoney then
             originalTakeInboxMoney = TakeInboxMoney
             TakeInboxMoney = function(mailIndex)
-                -- Capture sender before taking money
-                local _, _, sender = GetInboxHeaderInfo(mailIndex)
+                -- Capture sender and subject before taking money
+                local _, _, sender, subject = GetInboxHeaderInfo(mailIndex)
                 if sender then
                     currentMailSender = sender
+                    -- Check if this is auction house mail
+                    local lowerSender = string.lower(sender)
+                    if string.find(lowerSender, "auction") then
+                        currentMailIsAuction = true
+                        currentMailSubject = subject
+                    else
+                        currentMailIsAuction = false
+                        currentMailSubject = nil
+                    end
                 end
                 return originalTakeInboxMoney(mailIndex)
             end
@@ -1926,12 +1941,43 @@ GoldTracker:SetScript("OnEvent", function()
         if TurtleMail and TurtleMail.TakeInboxMoney then
             local turtleMailOriginal = TurtleMail.TakeInboxMoney
             TurtleMail.TakeInboxMoney = function(mailIndex)
-                -- Capture sender before taking money
-                local _, _, sender = GetInboxHeaderInfo(mailIndex)
+                -- Capture sender and subject before taking money
+                local _, _, sender, subject = GetInboxHeaderInfo(mailIndex)
                 if sender then
                     currentMailSender = sender
+                    -- Check if this is auction house mail
+                    local lowerSender = string.lower(sender)
+                    if string.find(lowerSender, "auction") then
+                        currentMailIsAuction = true
+                        currentMailSubject = subject
+                    else
+                        currentMailIsAuction = false
+                        currentMailSubject = nil
+                    end
                 end
                 return turtleMailOriginal(mailIndex)
+            end
+        end
+
+        -- Hook RepairAllItems to detect repair costs
+        if RepairAllItems and not originalRepairAllItems then
+            originalRepairAllItems = RepairAllItems
+            RepairAllItems = function(useGuildBank)
+                pendingRepair = true
+                return originalRepairAllItems(useGuildBank)
+            end
+        end
+
+        -- Hook PlaceAuctionBid to capture item name when buying at AH
+        if PlaceAuctionBid and not originalPlaceAuctionBid then
+            originalPlaceAuctionBid = PlaceAuctionBid
+            PlaceAuctionBid = function(auctionType, index, bid)
+                -- Capture the item name before placing bid/buyout
+                local name = GetAuctionItemInfo(auctionType, index)
+                if name then
+                    pendingAuctionItem = name
+                end
+                return originalPlaceAuctionBid(auctionType, index, bid)
             end
         end
 
@@ -1973,9 +2019,9 @@ GoldTracker:SetScript("OnEvent", function()
             end
 
             -- Detect repair vs vendor
-            if source == "vendor" and delta < 0 then
-                -- Could be repair - we'll mark as vendor since we can't reliably detect
-                source = "vendor"
+            if source == "vendor" and delta < 0 and pendingRepair then
+                source = "repair"
+                pendingRepair = false
             end
 
             -- Try to get trade partner name at transaction time if not captured earlier
@@ -1988,16 +2034,34 @@ GoldTracker:SetScript("OnEvent", function()
                 end
             end
 
+            -- Handle auction house purchases (buying items directly)
+            if source == "auction" and delta < 0 and pendingAuctionItem then
+                detail = pendingAuctionItem
+                pendingAuctionItem = nil
+            end
+
             -- Try to get mail sender/recipient name
-            if source == "mail" and not detail then
+            if source == "mail" then
                 if delta < 0 then
                     -- Sending mail - get recipient from send box
                     if SendMailNameEditBox then
                         detail = SendMailNameEditBox:GetText()
                     end
                 else
-                    -- Receiving mail - use captured sender from mail watcher
-                    detail = currentMailSender
+                    -- Receiving mail - check if it's from the auction house
+                    if currentMailIsAuction and currentMailSubject then
+                        source = "auction"
+                        -- Strip common auction prefixes to get just the item name
+                        detail = currentMailSubject
+                        detail = string.gsub(detail, "^Auction successful: ", "")
+                        detail = string.gsub(detail, "^Auction won: ", "")
+                        detail = string.gsub(detail, "^Sale pending: ", "")
+                        detail = string.gsub(detail, "^Outbid on ", "")
+                        detail = string.gsub(detail, "^Auction expired: ", "")
+                    elseif not detail then
+                        -- Regular mail - use captured sender from mail watcher
+                        detail = currentMailSender
+                    end
                 end
             end
 
@@ -2013,12 +2077,14 @@ GoldTracker:SetScript("OnEvent", function()
     elseif event == "MERCHANT_CLOSED" then
         transactionContext = nil
         transactionDetail = nil
+        pendingRepair = false  -- Reset repair flag on merchant close
     elseif event == "AUCTION_HOUSE_SHOW" then
         transactionContext = "auction"
         transactionDetail = nil
     elseif event == "AUCTION_HOUSE_CLOSED" then
         transactionContext = nil
         transactionDetail = nil
+        pendingAuctionItem = nil
     elseif event == "MAIL_SHOW" then
         transactionContext = "mail"
         transactionDetail = nil
@@ -2042,6 +2108,8 @@ GoldTracker:SetScript("OnEvent", function()
         transactionContext = nil
         transactionDetail = nil
         currentMailSender = nil
+        currentMailIsAuction = false
+        currentMailSubject = nil
         -- Stop mail watcher
         if GoldTracker.mailWatcher then
             GoldTracker.mailWatcher:SetScript("OnUpdate", nil)
