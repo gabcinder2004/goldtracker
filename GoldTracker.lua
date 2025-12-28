@@ -25,6 +25,7 @@ local originalRepairAllItems = nil  -- For hooking RepairAllItems
 local pendingRepair = false         -- Flag to track if repair was just initiated
 local activeFilters = {}  -- Which sources are visible
 local currentPage = 1
+local detailFilter = nil  -- Filter by specific detail text (player name, item name, etc.)
 local transactionsFrame = nil
 local statisticsFrame = nil
 local tabButtons = {}
@@ -40,6 +41,8 @@ local isMinimized = false
 -- Constants
 local FRAME_WIDTH = 450
 local FRAME_HEIGHT = 280  -- Increased for tabs
+local STATS_FRAME_WIDTH = 550
+local STATS_FRAME_HEIGHT = 400
 local MINI_WIDTH = 150
 local MINI_HEIGHT = 60
 local CHART_PADDING_LEFT = 55
@@ -408,11 +411,566 @@ function GoldTracker:GetFilteredTransactions()
     for i = table.getn(data.transactions), 1, -1 do  -- Reverse order (newest first)
         local tx = data.transactions[i]
         if tx.timestamp >= cutoff and activeFilters[tx.source] then
-            table.insert(filtered, tx)
+            -- Apply detail filter if set
+            if detailFilter then
+                if tx.detail and tx.detail == detailFilter then
+                    table.insert(filtered, tx)
+                end
+            else
+                table.insert(filtered, tx)
+            end
         end
     end
 
     return filtered
+end
+
+-- Analytics: Get time range cutoff based on currentRange
+local function GetRangeCutoff()
+    local now = time()
+    local cutoff = 0
+
+    if currentRange == "session" then
+        cutoff = sessionStart or now
+    elseif currentRange == "1day" then
+        cutoff = now - (1 * 24 * 60 * 60)
+    elseif currentRange == "3days" then
+        cutoff = now - (3 * 24 * 60 * 60)
+    elseif currentRange == "7days" then
+        cutoff = now - (7 * 24 * 60 * 60)
+    elseif currentRange == "30days" then
+        cutoff = now - (30 * 24 * 60 * 60)
+    else
+        cutoff = 0
+    end
+
+    return cutoff
+end
+
+-- Analytics: Calculate all statistics for the statistics tab
+function GoldTracker:CalculateStatistics()
+    local data = InitCharacterData()
+    if not data or not data.transactions then
+        return nil
+    end
+
+    local cutoff = GetRangeCutoff()
+    local stats = {
+        -- Summary cards
+        peakGold = 0,
+        peakGoldTimestamp = 0,
+        totalIn = 0,
+        totalInCount = 0,
+        totalOut = 0,
+        totalOutCount = 0,
+        bestHour = nil,
+        bestHourRate = 0,
+
+        -- Source breakdown
+        incomeBySource = {},
+        expenseBySource = {},
+
+        -- Top trade partners
+        tradePartners = {},
+
+        -- Top auction items
+        auctionItems = {},
+
+        -- Earning patterns
+        byDayOfWeek = {},  -- 1=Sunday, 7=Saturday
+        byHourOfDay = {},  -- 0-23
+    }
+
+    -- Initialize source tables
+    for i, source in ipairs(SOURCES) do
+        if source.key ~= "all" then
+            stats.incomeBySource[source.key] = 0
+            stats.expenseBySource[source.key] = 0
+        end
+    end
+
+    -- Initialize time pattern tables
+    for i = 1, 7 do
+        stats.byDayOfWeek[i] = {total = 0, count = 0}
+    end
+    for i = 0, 23 do
+        stats.byHourOfDay[i] = {total = 0, count = 0}
+    end
+
+    -- Temporary tables for aggregation
+    local tradePartnerData = {}
+    local auctionItemData = {}
+
+    -- Process all transactions within time range
+    for i, tx in ipairs(data.transactions) do
+        if tx.timestamp >= cutoff then
+            -- Track peak gold
+            if tx.balance and tx.balance > stats.peakGold then
+                stats.peakGold = tx.balance
+                stats.peakGoldTimestamp = tx.timestamp
+            end
+
+            -- Total income/expenses
+            if tx.amount > 0 then
+                stats.totalIn = stats.totalIn + tx.amount
+                stats.totalInCount = stats.totalInCount + 1
+                if stats.incomeBySource[tx.source] then
+                    stats.incomeBySource[tx.source] = stats.incomeBySource[tx.source] + tx.amount
+                end
+            else
+                stats.totalOut = stats.totalOut + tx.amount
+                stats.totalOutCount = stats.totalOutCount + 1
+                if stats.expenseBySource[tx.source] then
+                    stats.expenseBySource[tx.source] = stats.expenseBySource[tx.source] + math.abs(tx.amount)
+                end
+            end
+
+            -- Time patterns
+            local d = date("*t", tx.timestamp)
+            local dow = d.wday  -- 1=Sunday, 7=Saturday
+            local hour = d.hour
+
+            stats.byDayOfWeek[dow].total = stats.byDayOfWeek[dow].total + tx.amount
+            stats.byDayOfWeek[dow].count = stats.byDayOfWeek[dow].count + 1
+
+            stats.byHourOfDay[hour].total = stats.byHourOfDay[hour].total + tx.amount
+            stats.byHourOfDay[hour].count = stats.byHourOfDay[hour].count + 1
+
+            -- Trade partner aggregation
+            if tx.source == "trade" and tx.detail and tx.detail ~= "" then
+                if not tradePartnerData[tx.detail] then
+                    tradePartnerData[tx.detail] = {name = tx.detail, count = 0, received = 0, sent = 0}
+                end
+                tradePartnerData[tx.detail].count = tradePartnerData[tx.detail].count + 1
+                if tx.amount > 0 then
+                    tradePartnerData[tx.detail].received = tradePartnerData[tx.detail].received + tx.amount
+                else
+                    tradePartnerData[tx.detail].sent = tradePartnerData[tx.detail].sent + math.abs(tx.amount)
+                end
+            end
+
+            -- Auction item aggregation
+            if tx.source == "auction" and tx.detail and tx.detail ~= "" then
+                if not auctionItemData[tx.detail] then
+                    auctionItemData[tx.detail] = {name = tx.detail, count = 0, income = 0, expense = 0}
+                end
+                auctionItemData[tx.detail].count = auctionItemData[tx.detail].count + 1
+                if tx.amount > 0 then
+                    auctionItemData[tx.detail].income = auctionItemData[tx.detail].income + tx.amount
+                else
+                    auctionItemData[tx.detail].expense = auctionItemData[tx.detail].expense + math.abs(tx.amount)
+                end
+            end
+        end
+    end
+
+    -- Convert trade partner data to sorted array
+    for name, partner in pairs(tradePartnerData) do
+        partner.net = partner.received - partner.sent
+        table.insert(stats.tradePartners, partner)
+    end
+    -- Sort by absolute net value (most significant first)
+    table.sort(stats.tradePartners, function(a, b)
+        return math.abs(a.net) > math.abs(b.net)
+    end)
+
+    -- Convert auction item data to sorted array
+    for name, item in pairs(auctionItemData) do
+        item.net = item.income - item.expense
+        table.insert(stats.auctionItems, item)
+    end
+    -- Sort by absolute net value
+    table.sort(stats.auctionItems, function(a, b)
+        return math.abs(a.net) > math.abs(b.net)
+    end)
+
+    -- Find best hour (highest average income)
+    local bestHourIdx = 0
+    local bestHourAvg = -999999999
+    for hour = 0, 23 do
+        if stats.byHourOfDay[hour].count > 0 then
+            local avg = stats.byHourOfDay[hour].total / stats.byHourOfDay[hour].count
+            if avg > bestHourAvg then
+                bestHourAvg = avg
+                bestHourIdx = hour
+            end
+        end
+    end
+    if bestHourAvg > -999999999 then
+        stats.bestHour = bestHourIdx
+        stats.bestHourRate = bestHourAvg
+    end
+
+    return stats
+end
+
+-- Analytics: Get sorted source breakdown for display
+function GoldTracker:GetSourceBreakdown(stats, isIncome)
+    local breakdown = {}
+    local sourceData = isIncome and stats.incomeBySource or stats.expenseBySource
+    local total = 0
+
+    -- Calculate total
+    for source, amount in pairs(sourceData) do
+        total = total + amount
+    end
+
+    -- Build sorted list
+    for source, amount in pairs(sourceData) do
+        if amount > 0 then
+            local pct = 0
+            if total > 0 then
+                pct = math.floor((amount / total) * 100)
+            end
+            table.insert(breakdown, {
+                source = source,
+                amount = amount,
+                percent = pct
+            })
+        end
+    end
+
+    -- Sort by amount descending
+    table.sort(breakdown, function(a, b)
+        return a.amount > b.amount
+    end)
+
+    return breakdown, total
+end
+
+-- Analytics: Get best earning days
+function GoldTracker:GetBestDays(stats)
+    local dayNames = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"}
+    local days = {}
+
+    for dow = 1, 7 do
+        if stats.byDayOfWeek[dow].count > 0 then
+            local avg = stats.byDayOfWeek[dow].total / stats.byDayOfWeek[dow].count
+            table.insert(days, {
+                name = dayNames[dow],
+                avg = avg,
+                count = stats.byDayOfWeek[dow].count
+            })
+        end
+    end
+
+    -- Sort by average descending
+    table.sort(days, function(a, b)
+        return a.avg > b.avg
+    end)
+
+    return days
+end
+
+-- Analytics: Get best earning hours
+function GoldTracker:GetBestHours(stats)
+    local hours = {}
+
+    for hour = 0, 23 do
+        if stats.byHourOfDay[hour].count > 0 then
+            local avg = stats.byHourOfDay[hour].total / stats.byHourOfDay[hour].count
+            -- Format hour as "Xam" or "Xpm"
+            local displayHour = hour
+            local suffix = "am"
+            if hour >= 12 then
+                suffix = "pm"
+                if hour > 12 then displayHour = hour - 12 end
+            end
+            if hour == 0 then displayHour = 12 end
+
+            table.insert(hours, {
+                hour = hour,
+                display = displayHour .. suffix,
+                avg = avg,
+                count = stats.byHourOfDay[hour].count
+            })
+        end
+    end
+
+    -- Sort by average descending
+    table.sort(hours, function(a, b)
+        return a.avg > b.avg
+    end)
+
+    return hours
+end
+
+-- Statistics: Update the statistics display
+function GoldTracker:UpdateStatisticsDisplay()
+    if not statisticsFrame then return end
+
+    local stats = self:CalculateStatistics()
+    if not stats then
+        -- No data, show empty state
+        statisticsFrame.cards.peak.value:SetText("--")
+        statisticsFrame.cards.peak.subtext:SetText("")
+        statisticsFrame.cards.totalIn.value:SetText("--")
+        statisticsFrame.cards.totalIn.subtext:SetText("0 txns")
+        statisticsFrame.cards.totalOut.value:SetText("--")
+        statisticsFrame.cards.totalOut.subtext:SetText("0 txns")
+        statisticsFrame.cards.bestHour.value:SetText("--")
+        statisticsFrame.cards.bestHour.subtext:SetText("")
+        return
+    end
+
+    -- Update summary cards
+    -- Peak Gold
+    local peakGold = math.floor(stats.peakGold / 10000)
+    local peakSilver = math.floor(math.mod(stats.peakGold, 10000) / 100)
+    statisticsFrame.cards.peak.value:SetText(peakGold .. "g " .. peakSilver .. "s")
+    if stats.peakGoldTimestamp > 0 then
+        local d = date("*t", stats.peakGoldTimestamp)
+        statisticsFrame.cards.peak.subtext:SetText(d.month .. "/" .. d.day)
+    else
+        statisticsFrame.cards.peak.subtext:SetText("")
+    end
+
+    -- Total In
+    local inGold = math.floor(stats.totalIn / 10000)
+    local inSilver = math.floor(math.mod(stats.totalIn, 10000) / 100)
+    statisticsFrame.cards.totalIn.value:SetText("+" .. inGold .. "g " .. inSilver .. "s")
+    statisticsFrame.cards.totalIn.value:SetTextColor(COLORS.positive[1], COLORS.positive[2], COLORS.positive[3], 1)
+    statisticsFrame.cards.totalIn.subtext:SetText(stats.totalInCount .. " txns")
+
+    -- Total Out
+    local outGold = math.floor(math.abs(stats.totalOut) / 10000)
+    local outSilver = math.floor(math.mod(math.abs(stats.totalOut), 10000) / 100)
+    statisticsFrame.cards.totalOut.value:SetText("-" .. outGold .. "g " .. outSilver .. "s")
+    statisticsFrame.cards.totalOut.value:SetTextColor(COLORS.negative[1], COLORS.negative[2], COLORS.negative[3], 1)
+    statisticsFrame.cards.totalOut.subtext:SetText(stats.totalOutCount .. " txns")
+
+    -- Best Hour
+    if stats.bestHour then
+        local hour = stats.bestHour
+        local suffix = "am"
+        local displayHour = hour
+        if hour >= 12 then
+            suffix = "pm"
+            if hour > 12 then displayHour = hour - 12 end
+        end
+        if hour == 0 then displayHour = 12 end
+
+        local rateGold = math.floor(stats.bestHourRate / 10000)
+        local rateSilver = math.floor(math.mod(math.abs(stats.bestHourRate), 10000) / 100)
+        local rateSign = stats.bestHourRate >= 0 and "+" or "-"
+        statisticsFrame.cards.bestHour.value:SetText(rateSign .. math.abs(rateGold) .. "g/hr")
+        statisticsFrame.cards.bestHour.subtext:SetText(displayHour .. "-" .. (displayHour + 1) .. suffix)
+    else
+        statisticsFrame.cards.bestHour.value:SetText("--")
+        statisticsFrame.cards.bestHour.subtext:SetText("")
+    end
+
+    -- Update source breakdown
+    local incomeBreakdown, incomeTotal = self:GetSourceBreakdown(stats, true)
+    local expenseBreakdown, expenseTotal = self:GetSourceBreakdown(stats, false)
+
+    -- Max bar width (accounting for padding)
+    local maxBarWidth = 240
+
+    -- Income rows
+    for i = 1, 5 do
+        local row = statisticsFrame.incomeRows[i]
+        if incomeBreakdown[i] then
+            local data = incomeBreakdown[i]
+            local sourceLabel = string.upper(string.sub(data.source, 1, 1)) .. string.sub(data.source, 2)
+            row.source:SetText(sourceLabel)
+
+            local gold = math.floor(data.amount / 10000)
+            local silver = math.floor(math.mod(data.amount, 10000) / 100)
+            row.amount:SetText("+" .. gold .. "g " .. silver .. "s")
+
+            row.percent:SetText(data.percent .. "%")
+
+            -- Set bar width based on percentage
+            local barWidth = math.max(1, (data.percent / 100) * maxBarWidth)
+            row.bar:SetWidth(barWidth)
+            row.bar:Show()
+
+            row.btn.sourceKey = data.source
+            row.source:Show()
+            row.amount:Show()
+            row.percent:Show()
+        else
+            row.bar:Hide()
+            row.source:SetText("")
+            row.amount:SetText("")
+            row.percent:SetText("")
+            row.btn.sourceKey = nil
+        end
+    end
+
+    -- Expense rows
+    for i = 1, 5 do
+        local row = statisticsFrame.expenseRows[i]
+        if expenseBreakdown[i] then
+            local data = expenseBreakdown[i]
+            local sourceLabel = string.upper(string.sub(data.source, 1, 1)) .. string.sub(data.source, 2)
+            row.source:SetText(sourceLabel)
+
+            local gold = math.floor(data.amount / 10000)
+            local silver = math.floor(math.mod(data.amount, 10000) / 100)
+            row.amount:SetText("-" .. gold .. "g " .. silver .. "s")
+
+            row.percent:SetText(data.percent .. "%")
+
+            -- Set bar width based on percentage
+            local barWidth = math.max(1, (data.percent / 100) * maxBarWidth)
+            row.bar:SetWidth(barWidth)
+            row.bar:Show()
+
+            row.btn.sourceKey = data.source
+            row.source:Show()
+            row.amount:Show()
+            row.percent:Show()
+        else
+            row.bar:Hide()
+            row.source:SetText("")
+            row.amount:SetText("")
+            row.percent:SetText("")
+            row.btn.sourceKey = nil
+        end
+    end
+
+    -- Update trade partners
+    for i = 1, 5 do
+        local row = statisticsFrame.tradeRows[i]
+        if stats.tradePartners[i] then
+            local partner = stats.tradePartners[i]
+            local displayName = partner.name
+            if string.len(displayName) > 12 then
+                displayName = string.sub(displayName, 1, 11) .. ".."
+            end
+            row.name:SetText(displayName)
+            row.count:SetText(partner.count)
+
+            local netGold = math.floor(math.abs(partner.net) / 10000)
+            local netSilver = math.floor(math.mod(math.abs(partner.net), 10000) / 100)
+            local netSign = partner.net >= 0 and "+" or "-"
+            row.net:SetText(netSign .. netGold .. "g " .. netSilver .. "s")
+            if partner.net >= 0 then
+                row.net:SetTextColor(COLORS.positive[1], COLORS.positive[2], COLORS.positive[3], 1)
+            else
+                row.net:SetTextColor(COLORS.negative[1], COLORS.negative[2], COLORS.negative[3], 1)
+            end
+
+            row.btn.playerName = partner.name
+            row.name:Show()
+            row.count:Show()
+            row.net:Show()
+        else
+            row.name:SetText("")
+            row.count:SetText("")
+            row.net:SetText("")
+            row.btn.playerName = nil
+        end
+    end
+
+    -- Update auction items
+    for i = 1, 5 do
+        local row = statisticsFrame.auctionRows[i]
+        if stats.auctionItems[i] then
+            local item = stats.auctionItems[i]
+            local displayName = item.name
+            if string.len(displayName) > 14 then
+                displayName = string.sub(displayName, 1, 13) .. ".."
+            end
+            row.name:SetText(displayName)
+            row.count:SetText(item.count)
+
+            local netGold = math.floor(math.abs(item.net) / 10000)
+            local netSilver = math.floor(math.mod(math.abs(item.net), 10000) / 100)
+            local netSign = item.net >= 0 and "+" or "-"
+            row.net:SetText(netSign .. netGold .. "g " .. netSilver .. "s")
+            if item.net >= 0 then
+                row.net:SetTextColor(COLORS.positive[1], COLORS.positive[2], COLORS.positive[3], 1)
+            else
+                row.net:SetTextColor(COLORS.negative[1], COLORS.negative[2], COLORS.negative[3], 1)
+            end
+
+            row.btn.itemName = item.name
+            row.name:Show()
+            row.count:Show()
+            row.net:Show()
+        else
+            row.name:SetText("")
+            row.count:SetText("")
+            row.net:SetText("")
+            row.btn.itemName = nil
+        end
+    end
+
+    -- Update earning patterns
+    local bestDays = self:GetBestDays(stats)
+    local daysStr = ""
+    for i = 1, math.min(3, table.getn(bestDays)) do
+        local day = bestDays[i]
+        local avgGold = math.floor(day.avg / 10000)
+        local sign = day.avg >= 0 and "+" or ""
+        if i > 1 then daysStr = daysStr .. "  " end
+        daysStr = daysStr .. day.name .. " (" .. sign .. avgGold .. "g avg)"
+    end
+    if daysStr == "" then daysStr = "Not enough data" end
+    statisticsFrame.bestDaysText:SetText(daysStr)
+
+    local bestHours = self:GetBestHours(stats)
+    local hoursStr = ""
+    for i = 1, math.min(3, table.getn(bestHours)) do
+        local hour = bestHours[i]
+        local avgGold = math.floor(hour.avg / 10000)
+        local sign = hour.avg >= 0 and "+" or ""
+        if i > 1 then hoursStr = hoursStr .. "  " end
+        hoursStr = hoursStr .. hour.display .. " (" .. sign .. avgGold .. "g avg)"
+    end
+    if hoursStr == "" then hoursStr = "Not enough data" end
+    statisticsFrame.bestHoursText:SetText(hoursStr)
+end
+
+-- Filter: Switch to transactions tab filtered by source
+function GoldTracker:FilterBySource(sourceKey)
+    -- Set only the specified source as active
+    for i, source in ipairs(SOURCES) do
+        if source.key ~= "all" then
+            activeFilters[source.key] = (source.key == sourceKey)
+        end
+    end
+
+    -- Clear detail filter
+    detailFilter = nil
+
+    -- Switch to transactions tab
+    currentPage = 1
+    SwitchTab("transactions")
+
+    -- Update filter button visuals
+    if transactionsFrame and transactionsFrame.filterButtons then
+        for key, btn in pairs(transactionsFrame.filterButtons) do
+            btn:UpdateState()
+        end
+    end
+end
+
+-- Filter: Switch to transactions tab filtered by detail (player name, item name)
+function GoldTracker:FilterByDetail(sourceKey, detail)
+    -- Set only the specified source as active
+    for i, source in ipairs(SOURCES) do
+        if source.key ~= "all" then
+            activeFilters[source.key] = (source.key == sourceKey)
+        end
+    end
+
+    -- Set detail filter
+    detailFilter = detail
+
+    -- Switch to transactions tab
+    currentPage = 1
+    SwitchTab("transactions")
+
+    -- Update filter button visuals
+    if transactionsFrame and transactionsFrame.filterButtons then
+        for key, btn in pairs(transactionsFrame.filterButtons) do
+            btn:UpdateState()
+        end
+    end
 end
 
 -- Transactions: Format time for table display
@@ -431,6 +989,20 @@ end
 -- Transactions: Update the transaction list display
 function GoldTracker:UpdateTransactionList()
     if not transactionsFrame then return end
+
+    -- Update detail filter indicator
+    if transactionsFrame.detailFilterFrame then
+        if detailFilter then
+            local displayText = detailFilter
+            if string.len(displayText) > 14 then
+                displayText = string.sub(displayText, 1, 13) .. ".."
+            end
+            transactionsFrame.detailFilterFrame.text:SetText(displayText)
+            transactionsFrame.detailFilterFrame:Show()
+        else
+            transactionsFrame.detailFilterFrame:Hide()
+        end
+    end
 
     local filtered = self:GetFilteredTransactions()
     local totalCount = table.getn(filtered)
@@ -876,6 +1448,17 @@ local function SwitchTab(tabKey)
         tab:SetActive(key == tabKey)
     end
 
+    -- Resize window for statistics tab
+    if mainFrame then
+        if tabKey == "statistics" then
+            mainFrame:SetWidth(STATS_FRAME_WIDTH)
+            mainFrame:SetHeight(STATS_FRAME_HEIGHT)
+        else
+            mainFrame:SetWidth(FRAME_WIDTH)
+            mainFrame:SetHeight(FRAME_HEIGHT)
+        end
+    end
+
     -- Show/hide content
     if chartFrame then
         if tabKey == "chart" then
@@ -890,6 +1473,8 @@ local function SwitchTab(tabKey)
     if transactionsFrame then
         if tabKey == "transactions" then
             transactionsFrame:Show()
+            -- Clear detail filter when explicitly switching to transactions
+            detailFilter = nil
             GoldTracker:UpdateTransactionList()
         else
             transactionsFrame:Hide()
@@ -899,10 +1484,446 @@ local function SwitchTab(tabKey)
     if statisticsFrame then
         if tabKey == "statistics" then
             statisticsFrame:Show()
+            GoldTracker:UpdateStatisticsDisplay()
         else
             statisticsFrame:Hide()
         end
     end
+end
+
+-- UI: Create statistics frame content (separated to avoid upvalue limit)
+local function CreateStatisticsFrame()
+    -- Statistics frame (hidden by default)
+    statisticsFrame = CreateFrame("Frame", nil, mainFrame)
+    statisticsFrame:SetPoint("TOPLEFT", mainFrame, "TOPLEFT", 10, -CHART_TOP_OFFSET)
+    statisticsFrame:SetPoint("BOTTOMRIGHT", mainFrame, "BOTTOMRIGHT", -10, 8)
+    statisticsFrame:Hide()
+
+    -- Statistics background
+    local statsBg = statisticsFrame:CreateTexture(nil, "BACKGROUND")
+    statsBg:SetTexture("Interface\\Buttons\\WHITE8X8")
+    statsBg:SetAllPoints()
+    statsBg:SetVertexColor(0.05, 0.05, 0.05, 0.3)
+
+    -- Create a scroll frame for statistics content
+    statisticsFrame.scrollFrame = CreateFrame("ScrollFrame", nil, statisticsFrame)
+    statisticsFrame.scrollFrame:SetPoint("TOPLEFT", statisticsFrame, "TOPLEFT", 0, 0)
+    statisticsFrame.scrollFrame:SetPoint("BOTTOMRIGHT", statisticsFrame, "BOTTOMRIGHT", 0, 0)
+    statisticsFrame.scrollFrame:EnableMouseWheel(true)
+    statisticsFrame.scrollFrame:SetScript("OnMouseWheel", function()
+        local current = this:GetVerticalScroll()
+        local maxScroll = this:GetVerticalScrollRange()
+        local newScroll = current - (arg1 * 20)
+        if newScroll < 0 then newScroll = 0 end
+        if newScroll > maxScroll then newScroll = maxScroll end
+        this:SetVerticalScroll(newScroll)
+    end)
+
+    -- Content frame inside scroll
+    statisticsFrame.content = CreateFrame("Frame", nil, statisticsFrame.scrollFrame)
+    statisticsFrame.content:SetWidth(530)
+    statisticsFrame.content:SetHeight(600)
+    statisticsFrame.scrollFrame:SetScrollChild(statisticsFrame.content)
+
+    local content = statisticsFrame.content
+    local yOffset = 0
+
+    -- Helper function to create a summary card
+    local function CreateSummaryCard(parent, xPos, width)
+        local card = CreateFrame("Frame", nil, parent)
+        card:SetWidth(width)
+        card:SetHeight(50)
+        card:SetPoint("TOPLEFT", parent, "TOPLEFT", xPos, 0)
+
+        card.bg = card:CreateTexture(nil, "BACKGROUND")
+        card.bg:SetTexture("Interface\\Buttons\\WHITE8X8")
+        card.bg:SetAllPoints()
+        card.bg:SetVertexColor(0.08, 0.08, 0.08, 0.8)
+
+        card.border = {}
+        for i = 1, 4 do
+            card.border[i] = card:CreateTexture(nil, "BORDER")
+            card.border[i]:SetTexture("Interface\\Buttons\\WHITE8X8")
+            card.border[i]:SetVertexColor(0.3, 0.3, 0.3, 0.5)
+        end
+        card.border[1]:SetHeight(1)
+        card.border[1]:SetPoint("TOPLEFT", card, "TOPLEFT", 0, 0)
+        card.border[1]:SetPoint("TOPRIGHT", card, "TOPRIGHT", 0, 0)
+        card.border[2]:SetHeight(1)
+        card.border[2]:SetPoint("BOTTOMLEFT", card, "BOTTOMLEFT", 0, 0)
+        card.border[2]:SetPoint("BOTTOMRIGHT", card, "BOTTOMRIGHT", 0, 0)
+        card.border[3]:SetWidth(1)
+        card.border[3]:SetPoint("TOPLEFT", card, "TOPLEFT", 0, 0)
+        card.border[3]:SetPoint("BOTTOMLEFT", card, "BOTTOMLEFT", 0, 0)
+        card.border[4]:SetWidth(1)
+        card.border[4]:SetPoint("TOPRIGHT", card, "TOPRIGHT", 0, 0)
+        card.border[4]:SetPoint("BOTTOMRIGHT", card, "BOTTOMRIGHT", 0, 0)
+
+        card.label = card:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        card.label:SetPoint("TOP", card, "TOP", 0, -6)
+        card.label:SetTextColor(0.6, 0.6, 0.6, 1)
+
+        card.value = card:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+        card.value:SetPoint("CENTER", card, "CENTER", 0, 0)
+        card.value:SetTextColor(1, 0.843, 0, 1)
+
+        card.subtext = card:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        card.subtext:SetPoint("BOTTOM", card, "BOTTOM", 0, 6)
+        card.subtext:SetTextColor(0.5, 0.5, 0.5, 1)
+
+        return card
+    end
+
+    -- Summary cards row
+    local cardWidth = 125
+    local cardSpacing = 8
+    statisticsFrame.cards = {}
+
+    statisticsFrame.cards.peak = CreateSummaryCard(content, 0, cardWidth)
+    statisticsFrame.cards.peak.label:SetText("PEAK GOLD")
+
+    statisticsFrame.cards.totalIn = CreateSummaryCard(content, cardWidth + cardSpacing, cardWidth)
+    statisticsFrame.cards.totalIn.label:SetText("TOTAL IN")
+
+    statisticsFrame.cards.totalOut = CreateSummaryCard(content, (cardWidth + cardSpacing) * 2, cardWidth)
+    statisticsFrame.cards.totalOut.label:SetText("TOTAL OUT")
+
+    statisticsFrame.cards.bestHour = CreateSummaryCard(content, (cardWidth + cardSpacing) * 3, cardWidth)
+    statisticsFrame.cards.bestHour.label:SetText("BEST HOUR")
+
+    yOffset = -58
+
+    -- Source Breakdown Section
+    local sourceLabel = content:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    sourceLabel:SetPoint("TOPLEFT", content, "TOPLEFT", 0, yOffset)
+    sourceLabel:SetText("SOURCE BREAKDOWN")
+    sourceLabel:SetTextColor(0.8, 0.8, 0.8, 1)
+
+    yOffset = yOffset - 18
+
+    -- Income column
+    local incomeFrame = CreateFrame("Frame", nil, content)
+    incomeFrame:SetWidth(255)
+    incomeFrame:SetHeight(100)
+    incomeFrame:SetPoint("TOPLEFT", content, "TOPLEFT", 0, yOffset)
+
+    local incomeBg = incomeFrame:CreateTexture(nil, "BACKGROUND")
+    incomeBg:SetTexture("Interface\\Buttons\\WHITE8X8")
+    incomeBg:SetAllPoints()
+    incomeBg:SetVertexColor(0.05, 0.05, 0.05, 0.5)
+
+    local incomeHeader = incomeFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    incomeHeader:SetPoint("TOPLEFT", incomeFrame, "TOPLEFT", 5, -5)
+    incomeHeader:SetText("INCOME")
+    incomeHeader:SetTextColor(COLORS.positive[1], COLORS.positive[2], COLORS.positive[3], 1)
+
+    statisticsFrame.incomeRows = {}
+    for i = 1, 5 do
+        local row = {}
+        local rowY = -20 - ((i - 1) * 15)
+
+        row.bar = incomeFrame:CreateTexture(nil, "ARTWORK")
+        row.bar:SetTexture("Interface\\Buttons\\WHITE8X8")
+        row.bar:SetHeight(10)
+        row.bar:SetPoint("TOPLEFT", incomeFrame, "TOPLEFT", 5, rowY)
+        row.bar:SetVertexColor(COLORS.positive[1], COLORS.positive[2], COLORS.positive[3], 0.6)
+
+        row.source = incomeFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        row.source:SetPoint("LEFT", incomeFrame, "TOPLEFT", 8, rowY - 5)
+        row.source:SetTextColor(1, 1, 1, 1)
+
+        row.amount = incomeFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        row.amount:SetPoint("RIGHT", incomeFrame, "TOPRIGHT", -30, rowY - 5)
+        row.amount:SetJustifyH("RIGHT")
+        row.amount:SetTextColor(0.8, 0.8, 0.8, 1)
+
+        row.percent = incomeFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        row.percent:SetPoint("RIGHT", incomeFrame, "TOPRIGHT", -5, rowY - 5)
+        row.percent:SetJustifyH("RIGHT")
+        row.percent:SetTextColor(0.6, 0.6, 0.6, 1)
+
+        row.btn = CreateFrame("Button", nil, incomeFrame)
+        row.btn:SetPoint("TOPLEFT", incomeFrame, "TOPLEFT", 0, rowY)
+        row.btn:SetWidth(255)
+        row.btn:SetHeight(15)
+        row.btn.sourceKey = nil
+        row.btn:SetScript("OnClick", function()
+            if this.sourceKey then
+                GoldTracker:FilterBySource(this.sourceKey)
+            end
+        end)
+        row.btn:SetScript("OnEnter", function()
+            if this.sourceKey then
+                row.source:SetTextColor(1, 0.843, 0, 1)
+            end
+        end)
+        row.btn:SetScript("OnLeave", function()
+            row.source:SetTextColor(1, 1, 1, 1)
+        end)
+
+        statisticsFrame.incomeRows[i] = row
+    end
+
+    -- Expenses column
+    local expenseFrame = CreateFrame("Frame", nil, content)
+    expenseFrame:SetWidth(255)
+    expenseFrame:SetHeight(100)
+    expenseFrame:SetPoint("TOPLEFT", content, "TOPLEFT", 265, yOffset)
+
+    local expenseBg = expenseFrame:CreateTexture(nil, "BACKGROUND")
+    expenseBg:SetTexture("Interface\\Buttons\\WHITE8X8")
+    expenseBg:SetAllPoints()
+    expenseBg:SetVertexColor(0.05, 0.05, 0.05, 0.5)
+
+    local expenseHeader = expenseFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    expenseHeader:SetPoint("TOPLEFT", expenseFrame, "TOPLEFT", 5, -5)
+    expenseHeader:SetText("EXPENSES")
+    expenseHeader:SetTextColor(COLORS.negative[1], COLORS.negative[2], COLORS.negative[3], 1)
+
+    statisticsFrame.expenseRows = {}
+    for i = 1, 5 do
+        local row = {}
+        local rowY = -20 - ((i - 1) * 15)
+
+        row.bar = expenseFrame:CreateTexture(nil, "ARTWORK")
+        row.bar:SetTexture("Interface\\Buttons\\WHITE8X8")
+        row.bar:SetHeight(10)
+        row.bar:SetPoint("TOPLEFT", expenseFrame, "TOPLEFT", 5, rowY)
+        row.bar:SetVertexColor(COLORS.negative[1], COLORS.negative[2], COLORS.negative[3], 0.6)
+
+        row.source = expenseFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        row.source:SetPoint("LEFT", expenseFrame, "TOPLEFT", 8, rowY - 5)
+        row.source:SetTextColor(1, 1, 1, 1)
+
+        row.amount = expenseFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        row.amount:SetPoint("RIGHT", expenseFrame, "TOPRIGHT", -30, rowY - 5)
+        row.amount:SetJustifyH("RIGHT")
+        row.amount:SetTextColor(0.8, 0.8, 0.8, 1)
+
+        row.percent = expenseFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        row.percent:SetPoint("RIGHT", expenseFrame, "TOPRIGHT", -5, rowY - 5)
+        row.percent:SetJustifyH("RIGHT")
+        row.percent:SetTextColor(0.6, 0.6, 0.6, 1)
+
+        row.btn = CreateFrame("Button", nil, expenseFrame)
+        row.btn:SetPoint("TOPLEFT", expenseFrame, "TOPLEFT", 0, rowY)
+        row.btn:SetWidth(255)
+        row.btn:SetHeight(15)
+        row.btn.sourceKey = nil
+        row.btn:SetScript("OnClick", function()
+            if this.sourceKey then
+                GoldTracker:FilterBySource(this.sourceKey)
+            end
+        end)
+        row.btn:SetScript("OnEnter", function()
+            if this.sourceKey then
+                row.source:SetTextColor(1, 0.843, 0, 1)
+            end
+        end)
+        row.btn:SetScript("OnLeave", function()
+            row.source:SetTextColor(1, 1, 1, 1)
+        end)
+
+        statisticsFrame.expenseRows[i] = row
+    end
+
+    yOffset = yOffset - 110
+
+    -- Top Trade Partners Section
+    local tradeLabel = content:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    tradeLabel:SetPoint("TOPLEFT", content, "TOPLEFT", 0, yOffset)
+    tradeLabel:SetText("TOP TRADE PARTNERS")
+    tradeLabel:SetTextColor(0.8, 0.8, 0.8, 1)
+
+    local auctionLabel = content:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    auctionLabel:SetPoint("TOPLEFT", content, "TOPLEFT", 265, yOffset)
+    auctionLabel:SetText("TOP AUCTION ITEMS")
+    auctionLabel:SetTextColor(0.8, 0.8, 0.8, 1)
+
+    yOffset = yOffset - 18
+
+    -- Trade Partners list frame
+    local tradeListFrame = CreateFrame("Frame", nil, content)
+    tradeListFrame:SetWidth(255)
+    tradeListFrame:SetHeight(90)
+    tradeListFrame:SetPoint("TOPLEFT", content, "TOPLEFT", 0, yOffset)
+
+    local tradeBg = tradeListFrame:CreateTexture(nil, "BACKGROUND")
+    tradeBg:SetTexture("Interface\\Buttons\\WHITE8X8")
+    tradeBg:SetAllPoints()
+    tradeBg:SetVertexColor(0.05, 0.05, 0.05, 0.5)
+
+    local tradeNameHeader = tradeListFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    tradeNameHeader:SetPoint("TOPLEFT", tradeListFrame, "TOPLEFT", 5, -3)
+    tradeNameHeader:SetText("Player")
+    tradeNameHeader:SetTextColor(0.5, 0.5, 0.5, 1)
+
+    local tradeCountHeader = tradeListFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    tradeCountHeader:SetPoint("TOPLEFT", tradeListFrame, "TOPLEFT", 110, -3)
+    tradeCountHeader:SetText("#")
+    tradeCountHeader:SetTextColor(0.5, 0.5, 0.5, 1)
+
+    local tradeNetHeader = tradeListFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    tradeNetHeader:SetPoint("TOPRIGHT", tradeListFrame, "TOPRIGHT", -5, -3)
+    tradeNetHeader:SetText("Net")
+    tradeNetHeader:SetTextColor(0.5, 0.5, 0.5, 1)
+
+    statisticsFrame.tradeRows = {}
+    for i = 1, 5 do
+        local row = {}
+        local rowY = -16 - ((i - 1) * 14)
+
+        row.name = tradeListFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        row.name:SetPoint("TOPLEFT", tradeListFrame, "TOPLEFT", 5, rowY)
+        row.name:SetWidth(100)
+        row.name:SetJustifyH("LEFT")
+        row.name:SetTextColor(1, 1, 1, 1)
+
+        row.count = tradeListFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        row.count:SetPoint("TOPLEFT", tradeListFrame, "TOPLEFT", 110, rowY)
+        row.count:SetTextColor(0.6, 0.6, 0.6, 1)
+
+        row.net = tradeListFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        row.net:SetPoint("TOPRIGHT", tradeListFrame, "TOPRIGHT", -5, rowY)
+        row.net:SetJustifyH("RIGHT")
+
+        row.btn = CreateFrame("Button", nil, tradeListFrame)
+        row.btn:SetPoint("TOPLEFT", tradeListFrame, "TOPLEFT", 0, rowY)
+        row.btn:SetWidth(255)
+        row.btn:SetHeight(14)
+        row.btn.playerName = nil
+        row.btn:SetScript("OnClick", function()
+            if this.playerName then
+                GoldTracker:FilterByDetail("trade", this.playerName)
+            end
+        end)
+        row.btn:SetScript("OnEnter", function()
+            if this.playerName then
+                row.name:SetTextColor(1, 0.843, 0, 1)
+            end
+        end)
+        row.btn:SetScript("OnLeave", function()
+            row.name:SetTextColor(1, 1, 1, 1)
+        end)
+
+        statisticsFrame.tradeRows[i] = row
+    end
+
+    -- Auction Items list frame
+    local auctionListFrame = CreateFrame("Frame", nil, content)
+    auctionListFrame:SetWidth(255)
+    auctionListFrame:SetHeight(90)
+    auctionListFrame:SetPoint("TOPLEFT", content, "TOPLEFT", 265, yOffset)
+
+    local auctionBg = auctionListFrame:CreateTexture(nil, "BACKGROUND")
+    auctionBg:SetTexture("Interface\\Buttons\\WHITE8X8")
+    auctionBg:SetAllPoints()
+    auctionBg:SetVertexColor(0.05, 0.05, 0.05, 0.5)
+
+    local auctionNameHeader = auctionListFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    auctionNameHeader:SetPoint("TOPLEFT", auctionListFrame, "TOPLEFT", 5, -3)
+    auctionNameHeader:SetText("Item")
+    auctionNameHeader:SetTextColor(0.5, 0.5, 0.5, 1)
+
+    local auctionCountHeader = auctionListFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    auctionCountHeader:SetPoint("TOPLEFT", auctionListFrame, "TOPLEFT", 130, -3)
+    auctionCountHeader:SetText("#")
+    auctionCountHeader:SetTextColor(0.5, 0.5, 0.5, 1)
+
+    local auctionNetHeader = auctionListFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    auctionNetHeader:SetPoint("TOPRIGHT", auctionListFrame, "TOPRIGHT", -5, -3)
+    auctionNetHeader:SetText("Net")
+    auctionNetHeader:SetTextColor(0.5, 0.5, 0.5, 1)
+
+    statisticsFrame.auctionRows = {}
+    for i = 1, 5 do
+        local row = {}
+        local rowY = -16 - ((i - 1) * 14)
+
+        row.name = auctionListFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        row.name:SetPoint("TOPLEFT", auctionListFrame, "TOPLEFT", 5, rowY)
+        row.name:SetWidth(120)
+        row.name:SetJustifyH("LEFT")
+        row.name:SetTextColor(1, 1, 1, 1)
+
+        row.count = auctionListFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        row.count:SetPoint("TOPLEFT", auctionListFrame, "TOPLEFT", 130, rowY)
+        row.count:SetTextColor(0.6, 0.6, 0.6, 1)
+
+        row.net = auctionListFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        row.net:SetPoint("TOPRIGHT", auctionListFrame, "TOPRIGHT", -5, rowY)
+        row.net:SetJustifyH("RIGHT")
+
+        row.btn = CreateFrame("Button", nil, auctionListFrame)
+        row.btn:SetPoint("TOPLEFT", auctionListFrame, "TOPLEFT", 0, rowY)
+        row.btn:SetWidth(255)
+        row.btn:SetHeight(14)
+        row.btn.itemName = nil
+        row.btn:SetScript("OnClick", function()
+            if this.itemName then
+                GoldTracker:FilterByDetail("auction", this.itemName)
+            end
+        end)
+        row.btn:SetScript("OnEnter", function()
+            if this.itemName then
+                row.name:SetTextColor(1, 0.843, 0, 1)
+            end
+        end)
+        row.btn:SetScript("OnLeave", function()
+            row.name:SetTextColor(1, 1, 1, 1)
+        end)
+
+        statisticsFrame.auctionRows[i] = row
+    end
+
+    -- Click hints
+    local tradeHint = content:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    tradeHint:SetPoint("TOPLEFT", content, "TOPLEFT", 0, yOffset - 92)
+    tradeHint:SetText("(click to view transactions)")
+    tradeHint:SetTextColor(0.4, 0.4, 0.4, 1)
+
+    local auctionHint = content:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    auctionHint:SetPoint("TOPLEFT", content, "TOPLEFT", 265, yOffset - 92)
+    auctionHint:SetText("(click to view transactions)")
+    auctionHint:SetTextColor(0.4, 0.4, 0.4, 1)
+
+    yOffset = yOffset - 110
+
+    -- Earning Patterns Section
+    local patternsLabel = content:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    patternsLabel:SetPoint("TOPLEFT", content, "TOPLEFT", 0, yOffset)
+    patternsLabel:SetText("EARNING PATTERNS")
+    patternsLabel:SetTextColor(0.8, 0.8, 0.8, 1)
+
+    yOffset = yOffset - 18
+
+    local patternsFrame = CreateFrame("Frame", nil, content)
+    patternsFrame:SetWidth(520)
+    patternsFrame:SetHeight(40)
+    patternsFrame:SetPoint("TOPLEFT", content, "TOPLEFT", 0, yOffset)
+
+    local patternsBg = patternsFrame:CreateTexture(nil, "BACKGROUND")
+    patternsBg:SetTexture("Interface\\Buttons\\WHITE8X8")
+    patternsBg:SetAllPoints()
+    patternsBg:SetVertexColor(0.05, 0.05, 0.05, 0.5)
+
+    local bestDaysLabel = patternsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    bestDaysLabel:SetPoint("TOPLEFT", patternsFrame, "TOPLEFT", 5, -5)
+    bestDaysLabel:SetText("Best Days:")
+    bestDaysLabel:SetTextColor(0.6, 0.6, 0.6, 1)
+
+    statisticsFrame.bestDaysText = patternsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    statisticsFrame.bestDaysText:SetPoint("TOPLEFT", patternsFrame, "TOPLEFT", 70, -5)
+    statisticsFrame.bestDaysText:SetTextColor(1, 1, 1, 1)
+
+    local bestHoursLabel = patternsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    bestHoursLabel:SetPoint("TOPLEFT", patternsFrame, "TOPLEFT", 5, -22)
+    bestHoursLabel:SetText("Best Hours:")
+    bestHoursLabel:SetTextColor(0.6, 0.6, 0.6, 1)
+
+    statisticsFrame.bestHoursText = patternsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    statisticsFrame.bestHoursText:SetPoint("TOPLEFT", patternsFrame, "TOPLEFT", 70, -22)
+    statisticsFrame.bestHoursText:SetTextColor(1, 1, 1, 1)
 end
 
 -- UI: Create main frame
@@ -1038,6 +2059,9 @@ local function CreateMainFrame()
                 GoldTracker:UpdateMiniChart()
                 if transactionsFrame and transactionsFrame:IsVisible() then
                     GoldTracker:UpdateTransactionList()
+                end
+                if statisticsFrame and statisticsFrame:IsVisible() then
+                    GoldTracker:UpdateStatisticsDisplay()
                 end
             end
             info.checked = (currentRange == rangeKey)
@@ -1347,6 +2371,59 @@ local function CreateMainFrame()
         btn:UpdateState()
     end
 
+    -- Detail filter indicator (shows when filtering by specific player/item)
+    transactionsFrame.detailFilterFrame = CreateFrame("Frame", nil, transactionsFrame.filterBar)
+    transactionsFrame.detailFilterFrame:SetPoint("LEFT", transactionsFrame.filterBar, "LEFT", 320, 0)
+    transactionsFrame.detailFilterFrame:SetWidth(120)
+    transactionsFrame.detailFilterFrame:SetHeight(20)
+    transactionsFrame.detailFilterFrame:Hide()
+
+    transactionsFrame.detailFilterFrame.bg = transactionsFrame.detailFilterFrame:CreateTexture(nil, "BACKGROUND")
+    transactionsFrame.detailFilterFrame.bg:SetTexture("Interface\\Buttons\\WHITE8X8")
+    transactionsFrame.detailFilterFrame.bg:SetAllPoints()
+    transactionsFrame.detailFilterFrame.bg:SetVertexColor(0.15, 0.15, 0.15, 0.9)
+
+    transactionsFrame.detailFilterFrame.text = transactionsFrame.detailFilterFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    transactionsFrame.detailFilterFrame.text:SetPoint("LEFT", transactionsFrame.detailFilterFrame, "LEFT", 5, 0)
+    transactionsFrame.detailFilterFrame.text:SetWidth(90)
+    transactionsFrame.detailFilterFrame.text:SetJustifyH("LEFT")
+    transactionsFrame.detailFilterFrame.text:SetTextColor(1, 0.843, 0, 1)
+
+    -- Clear button
+    transactionsFrame.detailFilterFrame.clearBtn = CreateFrame("Button", nil, transactionsFrame.detailFilterFrame)
+    transactionsFrame.detailFilterFrame.clearBtn:SetWidth(14)
+    transactionsFrame.detailFilterFrame.clearBtn:SetHeight(14)
+    transactionsFrame.detailFilterFrame.clearBtn:SetPoint("RIGHT", transactionsFrame.detailFilterFrame, "RIGHT", -3, 0)
+
+    transactionsFrame.detailFilterFrame.clearBtn.text = transactionsFrame.detailFilterFrame.clearBtn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    transactionsFrame.detailFilterFrame.clearBtn.text:SetPoint("CENTER", 0, 0)
+    transactionsFrame.detailFilterFrame.clearBtn.text:SetText("x")
+    transactionsFrame.detailFilterFrame.clearBtn.text:SetTextColor(0.8, 0.8, 0.8, 1)
+
+    transactionsFrame.detailFilterFrame.clearBtn:SetScript("OnClick", function()
+        detailFilter = nil
+        -- Re-enable all filters
+        for i, source in ipairs(SOURCES) do
+            if source.key ~= "all" then
+                activeFilters[source.key] = true
+            end
+        end
+        for key, btn in pairs(transactionsFrame.filterButtons) do
+            btn:UpdateState()
+        end
+        transactionsFrame.detailFilterFrame:Hide()
+        currentPage = 1
+        GoldTracker:UpdateTransactionList()
+    end)
+
+    transactionsFrame.detailFilterFrame.clearBtn:SetScript("OnEnter", function()
+        this.text:SetTextColor(1, 0.843, 0, 1)
+    end)
+
+    transactionsFrame.detailFilterFrame.clearBtn:SetScript("OnLeave", function()
+        this.text:SetTextColor(0.8, 0.8, 0.8, 1)
+    end)
+
     -- Table container
     transactionsFrame.tableFrame = CreateFrame("Frame", nil, transactionsFrame)
     transactionsFrame.tableFrame:SetPoint("TOPLEFT", transactionsFrame.filterBar, "BOTTOMLEFT", 0, -4)
@@ -1530,33 +2607,8 @@ local function CreateMainFrame()
         this.text:SetTextColor(1, 1, 1, 1)
     end)
 
-    -- Statistics frame (hidden by default)
-    statisticsFrame = CreateFrame("Frame", nil, mainFrame)
-    statisticsFrame:SetPoint("TOPLEFT", mainFrame, "TOPLEFT", 10, -CHART_TOP_OFFSET)
-    statisticsFrame:SetPoint("BOTTOMRIGHT", mainFrame, "BOTTOMRIGHT", -10, 8)
-    statisticsFrame:Hide()
-
-    -- Statistics background
-    local statsBg = statisticsFrame:CreateTexture(nil, "BACKGROUND")
-    statsBg:SetTexture("Interface\\Buttons\\WHITE8X8")
-    statsBg:SetAllPoints()
-    statsBg:SetVertexColor(0.05, 0.05, 0.05, 0.3)
-
-    -- Coming soon message
-    local comingSoonText = statisticsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-    comingSoonText:SetPoint("CENTER", statisticsFrame, "CENTER", 0, 20)
-    comingSoonText:SetText("Statistics")
-    comingSoonText:SetTextColor(COLORS.gold[1], COLORS.gold[2], COLORS.gold[3], 1)
-
-    local comingSoonSubtext = statisticsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    comingSoonSubtext:SetPoint("CENTER", statisticsFrame, "CENTER", 0, -5)
-    comingSoonSubtext:SetText("Coming Soon")
-    comingSoonSubtext:SetTextColor(0.7, 0.7, 0.7, 1)
-
-    local comingSoonDesc = statisticsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    comingSoonDesc:SetPoint("CENTER", statisticsFrame, "CENTER", 0, -30)
-    comingSoonDesc:SetText("Detailed gold statistics and analytics")
-    comingSoonDesc:SetTextColor(0.5, 0.5, 0.5, 1)
+    -- Create statistics frame (in separate function to avoid upvalue limit)
+    CreateStatisticsFrame()
 
     mainFrame:Hide()
     return mainFrame
