@@ -86,6 +86,8 @@ local TRANSACTIONS_PER_PAGE = 18
 
 local RANGES = {
     {key = "session", label = "This Session"},
+    {key = "6hours", label = "Last 6 Hours"},
+    {key = "12hours", label = "Last 12 Hours"},
     {key = "1day", label = "Last Day"},
     {key = "3days", label = "Last 3 Days"},
     {key = "7days", label = "Last 7 Days"},
@@ -371,6 +373,10 @@ local function GetFilteredHistory()
 
     if currentRange == "session" then
         cutoff = sessionStart or now
+    elseif currentRange == "6hours" then
+        cutoff = now - (6 * 60 * 60)
+    elseif currentRange == "12hours" then
+        cutoff = now - (12 * 60 * 60)
     elseif currentRange == "1day" then
         cutoff = now - (1 * 24 * 60 * 60)
     elseif currentRange == "3days" then
@@ -404,6 +410,10 @@ function GoldTracker:GetFilteredTransactions()
     -- Apply time range filter (same as chart)
     if currentRange == "session" then
         cutoff = sessionStart or now
+    elseif currentRange == "6hours" then
+        cutoff = now - (6 * 60 * 60)
+    elseif currentRange == "12hours" then
+        cutoff = now - (12 * 60 * 60)
     elseif currentRange == "1day" then
         cutoff = now - (1 * 24 * 60 * 60)
     elseif currentRange == "3days" then
@@ -441,6 +451,10 @@ local function GetRangeCutoff()
 
     if currentRange == "session" then
         cutoff = sessionStart or now
+    elseif currentRange == "6hours" then
+        cutoff = now - (6 * 60 * 60)
+    elseif currentRange == "12hours" then
+        cutoff = now - (12 * 60 * 60)
     elseif currentRange == "1day" then
         cutoff = now - (1 * 24 * 60 * 60)
     elseif currentRange == "3days" then
@@ -1320,11 +1334,11 @@ local function DrawFilledArea(x1, y1, x2, y2)
 
     -- Performance optimization: draw fewer, wider columns
     local colStep = 3  -- Draw every 3 pixels
-    local colWidth = 4  -- 4px wide (slight overlap)
+    local colWidth = 3  -- Match step size exactly (no spillover)
 
     for i = 0, width, colStep do
         local t = width > 0 and (i / width) or 0
-        local height = y1 + (y2 - y1) * t
+        local height = y1 + (y2 - y1) * t + 1  -- Add 1px to reach the line
         DrawFillColumn(startX + i, height, colWidth)
     end
 end
@@ -1546,6 +1560,12 @@ function GoldTracker:UpdateChart()
         if lastX and lastY then
             DrawLine(lastX, lastY, x, y)
         end
+        lastX, lastY = x, y
+    end
+
+    -- Extend line to right edge of chart
+    if lastX and lastY then
+        DrawLine(lastX, lastY, CHART_WIDTH + 1, lastY)
     end
 end
 
@@ -3046,11 +3066,11 @@ local function DrawMiniFillArea(x1, y1, x2, y2)
     if width <= 0 then return end
 
     local colStep = 2
-    local colWidth = 3
+    local colWidth = 2  -- Match step size exactly (no spillover)
 
     for i = 0, width, colStep do
         local t = width > 0 and (i / width) or 0
-        local height = y1 + (y2 - y1) * t
+        local height = y1 + (y2 - y1) * t + 1  -- Add 1px to reach the line
         DrawMiniFillColumn(startX + i, height, colWidth)
     end
 end
@@ -3174,6 +3194,12 @@ function GoldTracker:UpdateMiniChart()
         if lastX and lastY then
             DrawMiniLine(lastX, lastY, x, y)
         end
+        lastX, lastY = x, y
+    end
+
+    -- Extend line to right edge of chart
+    if lastX and lastY then
+        DrawMiniLine(lastX, lastY, chartWidth + 1, lastY)
     end
 end
 
