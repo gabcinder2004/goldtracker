@@ -87,8 +87,8 @@ local TRANSACTIONS_PER_PAGE = 18
 
 local RANGES = {
     {key = "session", label = "This Session"},
+    {key = "3hours", label = "Last 3 Hours"},
     {key = "6hours", label = "Last 6 Hours"},
-    {key = "12hours", label = "Last 12 Hours"},
     {key = "1day", label = "Last Day"},
     {key = "3days", label = "Last 3 Days"},
     {key = "7days", label = "Last 7 Days"},
@@ -378,10 +378,10 @@ local function GetFilteredHistory()
 
     if currentRange == "session" then
         cutoff = sessionStart or now
+    elseif currentRange == "3hours" then
+        cutoff = now - (3 * 60 * 60)
     elseif currentRange == "6hours" then
         cutoff = now - (6 * 60 * 60)
-    elseif currentRange == "12hours" then
-        cutoff = now - (12 * 60 * 60)
     elseif currentRange == "1day" then
         cutoff = now - (1 * 24 * 60 * 60)
     elseif currentRange == "3days" then
@@ -415,10 +415,10 @@ function GoldTracker:GetFilteredTransactions()
     -- Apply time range filter (same as chart)
     if currentRange == "session" then
         cutoff = sessionStart or now
+    elseif currentRange == "3hours" then
+        cutoff = now - (3 * 60 * 60)
     elseif currentRange == "6hours" then
         cutoff = now - (6 * 60 * 60)
-    elseif currentRange == "12hours" then
-        cutoff = now - (12 * 60 * 60)
     elseif currentRange == "1day" then
         cutoff = now - (1 * 24 * 60 * 60)
     elseif currentRange == "3days" then
@@ -456,10 +456,10 @@ local function GetRangeCutoff()
 
     if currentRange == "session" then
         cutoff = sessionStart or now
+    elseif currentRange == "3hours" then
+        cutoff = now - (3 * 60 * 60)
     elseif currentRange == "6hours" then
         cutoff = now - (6 * 60 * 60)
-    elseif currentRange == "12hours" then
-        cutoff = now - (12 * 60 * 60)
     elseif currentRange == "1day" then
         cutoff = now - (1 * 24 * 60 * 60)
     elseif currentRange == "3days" then
