@@ -3119,7 +3119,7 @@ function GoldTracker:UpdateMiniChart()
     miniChartHeight = chartHeight  -- Set for gradient calculations
 
     -- Draw fill first, then lines on top
-    local maxPoints = 30
+    local maxPoints = 50  -- More points for better detail
     local step = math.max(1, math.floor(count / maxPoints))
     local lastX, lastY = nil, nil
 
@@ -3133,6 +3133,17 @@ function GoldTracker:UpdateMiniChart()
             DrawMiniFillArea(lastX, lastY, x, y)
         end
 
+        lastX, lastY = x, y
+    end
+
+    -- Ensure last point is included for fill
+    if step > 1 and count > 0 then
+        local entry = history[count]
+        local x = ((entry.timestamp - minTime) / timeRange) * chartWidth
+        local y = ((entry.gold - minGold) / goldRange) * chartHeight
+        if lastX and lastY and x > lastX then
+            DrawMiniFillArea(lastX, lastY, x, y)
+        end
         lastX, lastY = x, y
     end
 
@@ -3153,6 +3164,16 @@ function GoldTracker:UpdateMiniChart()
         end
 
         lastX, lastY = x, y
+    end
+
+    -- Ensure last point is included for line
+    if step > 1 and count > 0 then
+        local entry = history[count]
+        local x = ((entry.timestamp - minTime) / timeRange) * chartWidth
+        local y = ((entry.gold - minGold) / goldRange) * chartHeight
+        if lastX and lastY then
+            DrawMiniLine(lastX, lastY, x, y)
+        end
     end
 end
 
