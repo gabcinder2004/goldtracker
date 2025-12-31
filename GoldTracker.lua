@@ -40,12 +40,13 @@ local minimapButton = nil
 local miniFrame = nil
 local miniLineTextures = {}
 local isMinimized = false
+local miniViewMode = "chart"  -- "chart" or "transactions"
 
 -- Constants
 local FRAME_WIDTH = 550
 local FRAME_HEIGHT = 400
-local MINI_WIDTH = 150
-local MINI_HEIGHT = 60
+local MINI_WIDTH = 200
+local MINI_HEIGHT = 85
 local CHART_PADDING_LEFT = 55
 local CHART_PADDING_RIGHT = 15
 local CHART_TOP_OFFSET = 55  -- Increased for tab bar
@@ -353,9 +354,13 @@ local function RecordGold()
         GoldTracker:UpdateChart()
     end
 
-    -- Update mini chart if visible
+    -- Update mini view if visible
     if miniFrame and miniFrame:IsVisible() then
-        GoldTracker:UpdateMiniChart()
+        if miniViewMode == "transactions" then
+            GoldTracker:UpdateMiniTransactions()
+        else
+            GoldTracker:UpdateMiniChart()
+        end
     end
 
     -- Update transaction list if visible
@@ -2641,7 +2646,11 @@ local function CreateMainFrame()
                     data.selectedRange = rangeKey
                 end
                 GoldTracker:UpdateChart()
-                GoldTracker:UpdateMiniChart()
+                if miniViewMode == "transactions" then
+                    GoldTracker:UpdateMiniTransactions()
+                else
+                    GoldTracker:UpdateMiniChart()
+                end
                 if transactionsFrame and transactionsFrame:IsVisible() then
                     GoldTracker:UpdateTransactionList()
                 end
@@ -2926,22 +2935,150 @@ local function CreateMiniFrame()
     miniFrame.chartArea:SetPoint("TOPLEFT", miniFrame, "TOPLEFT", 5, -18)
     miniFrame.chartArea:SetPoint("BOTTOMRIGHT", miniFrame, "BOTTOMRIGHT", -5, 5)
 
-    -- Title
-    local title = miniFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    title:SetPoint("TOPLEFT", miniFrame, "TOPLEFT", 5, -4)
-    title:SetText("GoldTracker")
-    title:SetTextColor(COLORS.gold[1], COLORS.gold[2], COLORS.gold[3], 0.8)
+    -- Transactions area (hidden by default)
+    miniFrame.txArea = CreateFrame("Frame", nil, miniFrame)
+    miniFrame.txArea:SetPoint("TOPLEFT", miniFrame, "TOPLEFT", 5, -18)
+    miniFrame.txArea:SetPoint("BOTTOMRIGHT", miniFrame, "BOTTOMRIGHT", -5, 5)
+    miniFrame.txArea:Hide()
 
-    -- Current gold display
-    miniFrame.goldText = miniFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    miniFrame.goldText:SetPoint("TOPRIGHT", miniFrame, "TOPRIGHT", -18, -4)
-    miniFrame.goldText:SetTextColor(1, 1, 1, 0.9)
+    -- Transaction rows (4 rows to fit in mini view)
+    miniFrame.txRows = {}
+    local rowHeight = 14
+    for i = 1, 4 do
+        local row = {}
+        local yOffset = -((i - 1) * rowHeight)
 
-    -- Restore button (small X to expand back)
+        -- Row container for alignment
+        row.frame = CreateFrame("Frame", nil, miniFrame.txArea)
+        row.frame:SetPoint("TOPLEFT", miniFrame.txArea, "TOPLEFT", 0, yOffset)
+        row.frame:SetPoint("TOPRIGHT", miniFrame.txArea, "TOPRIGHT", 0, yOffset)
+        row.frame:SetHeight(rowHeight)
+
+        -- Date/time (compact, smaller font)
+        row.time = row.frame:CreateFontString(nil, "OVERLAY")
+        row.time:SetFont("Fonts\\FRIZQT__.TTF", 8)
+        row.time:SetPoint("LEFT", row.frame, "LEFT", 0, 0)
+        row.time:SetWidth(34)
+        row.time:SetJustifyH("LEFT")
+        row.time:SetTextColor(0.45, 0.45, 0.45, 1)
+
+        -- Detail (source/description, smaller font)
+        row.detail = row.frame:CreateFontString(nil, "OVERLAY")
+        row.detail:SetFont("Fonts\\FRIZQT__.TTF", 8)
+        row.detail:SetPoint("LEFT", row.time, "RIGHT", 2, 0)
+        row.detail:SetWidth(110)
+        row.detail:SetJustifyH("LEFT")
+        row.detail:SetTextColor(0.6, 0.6, 0.6, 1)
+        row.detailFull = ""
+
+        -- Hover area for detail tooltip
+        row.detailHover = CreateFrame("Button", nil, row.frame)
+        row.detailHover:SetPoint("LEFT", row.time, "RIGHT", 2, 0)
+        row.detailHover:SetWidth(110)
+        row.detailHover:SetHeight(rowHeight)
+        row.detailHover.row = row
+        row.detailHover:SetScript("OnEnter", function()
+            if this.row.detailFull and this.row.detailFull ~= "" then
+                GameTooltip:SetOwner(this, "ANCHOR_CURSOR")
+                GameTooltip:SetText(this.row.detailFull, 1, 1, 1)
+                GameTooltip:Show()
+            end
+        end)
+        row.detailHover:SetScript("OnLeave", function()
+            GameTooltip:Hide()
+        end)
+
+        -- Amount (right-aligned, smaller font)
+        row.amount = row.frame:CreateFontString(nil, "OVERLAY")
+        row.amount:SetFont("Fonts\\FRIZQT__.TTF", 9)
+        row.amount:SetPoint("RIGHT", row.frame, "RIGHT", 0, 0)
+        row.amount:SetWidth(36)
+        row.amount:SetJustifyH("RIGHT")
+
+        miniFrame.txRows[i] = row
+    end
+
+    -- Tab bar area
+    local tabBar = CreateFrame("Frame", nil, miniFrame)
+    tabBar:SetPoint("TOPLEFT", miniFrame, "TOPLEFT", 5, -3)
+    tabBar:SetPoint("TOPRIGHT", miniFrame, "TOPRIGHT", -18, -3)
+    tabBar:SetHeight(14)
+    miniFrame.tabBar = tabBar
+
+    -- Chart tab
+    local chartTab = CreateFrame("Button", nil, tabBar)
+    chartTab:SetWidth(40)
+    chartTab:SetHeight(12)
+    chartTab:SetPoint("LEFT", tabBar, "LEFT", 0, 0)
+    chartTab.text = chartTab:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    chartTab.text:SetPoint("CENTER", 0, 0)
+    chartTab.text:SetText("Chart")
+    chartTab.text:SetTextColor(COLORS.gold[1], COLORS.gold[2], COLORS.gold[3], 1)
+    miniFrame.chartTab = chartTab
+
+    -- Transactions tab
+    local txTab = CreateFrame("Button", nil, tabBar)
+    txTab:SetWidth(30)
+    txTab:SetHeight(12)
+    txTab:SetPoint("LEFT", chartTab, "RIGHT", 4, 0)
+    txTab.text = txTab:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    txTab.text:SetPoint("CENTER", 0, 0)
+    txTab.text:SetText("Txns")
+    txTab.text:SetTextColor(0.6, 0.6, 0.6, 1)
+    miniFrame.txTab = txTab
+
+    -- Tab click handlers
+    chartTab:SetScript("OnClick", function()
+        miniViewMode = "chart"
+        miniFrame.chartTab.text:SetTextColor(COLORS.gold[1], COLORS.gold[2], COLORS.gold[3], 1)
+        miniFrame.txTab.text:SetTextColor(0.6, 0.6, 0.6, 1)
+        miniFrame.chartArea:Show()
+        miniFrame.txArea:Hide()
+        GoldTracker:UpdateMiniChart()
+    end)
+
+    txTab:SetScript("OnClick", function()
+        miniViewMode = "transactions"
+        miniFrame.txTab.text:SetTextColor(COLORS.gold[1], COLORS.gold[2], COLORS.gold[3], 1)
+        miniFrame.chartTab.text:SetTextColor(0.6, 0.6, 0.6, 1)
+        miniFrame.chartArea:Hide()
+        miniFrame.txArea:Show()
+        GoldTracker:UpdateMiniTransactions()
+    end)
+
+    -- Tab hover effects
+    chartTab:SetScript("OnEnter", function()
+        if miniViewMode ~= "chart" then
+            this.text:SetTextColor(0.9, 0.9, 0.9, 1)
+        end
+    end)
+    chartTab:SetScript("OnLeave", function()
+        if miniViewMode ~= "chart" then
+            this.text:SetTextColor(0.6, 0.6, 0.6, 1)
+        end
+    end)
+    txTab:SetScript("OnEnter", function()
+        if miniViewMode ~= "transactions" then
+            this.text:SetTextColor(0.9, 0.9, 0.9, 1)
+        end
+    end)
+    txTab:SetScript("OnLeave", function()
+        if miniViewMode ~= "transactions" then
+            this.text:SetTextColor(0.6, 0.6, 0.6, 1)
+        end
+    end)
+
+    -- Current gold display (small, tucked to the right)
+    miniFrame.goldText = miniFrame:CreateFontString(nil, "OVERLAY")
+    miniFrame.goldText:SetFont("Fonts\\FRIZQT__.TTF", 8, "OUTLINE")
+    miniFrame.goldText:SetPoint("TOPRIGHT", miniFrame, "TOPRIGHT", -14, -5)
+    miniFrame.goldText:SetTextColor(0.8, 0.8, 0.8, 0.8)
+
+    -- Restore button (small + to expand back)
     local restoreBtn = CreateFrame("Button", nil, miniFrame)
-    restoreBtn:SetWidth(12)
-    restoreBtn:SetHeight(12)
-    restoreBtn:SetPoint("TOPRIGHT", miniFrame, "TOPRIGHT", -3, -3)
+    restoreBtn:SetWidth(10)
+    restoreBtn:SetHeight(10)
+    restoreBtn:SetPoint("TOPRIGHT", miniFrame, "TOPRIGHT", -2, -2)
     restoreBtn.text = restoreBtn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     restoreBtn.text:SetPoint("CENTER", 0, 0)
     restoreBtn.text:SetText("+")
@@ -3106,9 +3243,9 @@ function GoldTracker:UpdateMiniChart()
         miniFrame.goldText:SetText(prefix .. netSilver .. "s")
     end
     if netChange >= 0 then
-        miniFrame.goldText:SetTextColor(0.2, 0.8, 0.2, 1)
+        miniFrame.goldText:SetTextColor(0.5, 0.95, 0.5, 1)
     else
-        miniFrame.goldText:SetTextColor(0.8, 0.2, 0.2, 1)
+        miniFrame.goldText:SetTextColor(0.95, 0.5, 0.5, 1)
     end
 
     if count < 2 then return end
@@ -3203,6 +3340,110 @@ function GoldTracker:UpdateMiniChart()
     end
 end
 
+-- Format compact time for mini view (e.g., "2:34p")
+local function FormatMiniTime(timestamp)
+    local d = date("*t", timestamp)
+    local hour = d.hour
+    local ampm = "a"
+    if hour >= 12 then
+        ampm = "p"
+        if hour > 12 then hour = hour - 12 end
+    end
+    if hour == 0 then hour = 12 end
+    return hour .. ":" .. string.format("%02d", d.min) .. ampm
+end
+
+-- Update mini transactions view
+function GoldTracker:UpdateMiniTransactions()
+    if not miniFrame or not miniFrame:IsVisible() then return end
+    if not miniFrame.txRows then return end
+
+    -- Get transactions (most recent first)
+    local transactions = self:GetFilteredTransactions()
+    local count = table.getn(transactions)
+
+    -- Update gold text same as chart view
+    local data = InitCharacterData()
+    if data then
+        local history = GetFilteredHistory()
+        local histCount = table.getn(history)
+        local currentGold = GetMoney()
+        local netChange = 0
+        if histCount > 0 then
+            netChange = currentGold - history[1].gold
+        end
+        local netGold = math.floor(math.abs(netChange) / 10000)
+        local netSilver = math.floor(math.mod(math.abs(netChange), 10000) / 100)
+        local prefix = netChange >= 0 and "+" or "-"
+        if netGold > 0 then
+            miniFrame.goldText:SetText(prefix .. netGold .. "g " .. netSilver .. "s")
+        else
+            miniFrame.goldText:SetText(prefix .. netSilver .. "s")
+        end
+        if netChange >= 0 then
+            miniFrame.goldText:SetTextColor(0.5, 0.95, 0.5, 1)
+        else
+            miniFrame.goldText:SetTextColor(0.95, 0.5, 0.5, 1)
+        end
+    end
+
+    -- Populate rows (show most recent 4 transactions)
+    for i = 1, 4 do
+        local row = miniFrame.txRows[i]
+        if i <= count then
+            local tx = transactions[i]
+
+            -- Time (compact format)
+            row.time:SetText(FormatMiniTime(tx.timestamp))
+
+            -- Detail - show source or detail if available
+            local detailText = tx.detail or ""
+            if detailText == "" then
+                detailText = tx.source or ""
+                detailText = string.upper(string.sub(detailText, 1, 1)) .. string.sub(detailText, 2)
+            end
+            -- Store full text for tooltip
+            row.detailFull = detailText
+            -- Truncate for mini view
+            if string.len(detailText) > 26 then
+                detailText = string.sub(detailText, 1, 25) .. ".."
+            end
+            row.detail:SetText(detailText)
+
+            -- Amount (compact: gold, silver, or copper)
+            local absAmount = math.abs(tx.amount)
+            local gold = math.floor(absAmount / 10000)
+            local silver = math.floor(math.mod(absAmount, 10000) / 100)
+            local copper = math.mod(absAmount, 100)
+            local sign = tx.amount >= 0 and "+" or "-"
+            local amountText
+            if gold > 0 then
+                amountText = sign .. gold .. "g"
+            elseif silver > 0 then
+                amountText = sign .. silver .. "s"
+            else
+                amountText = sign .. copper .. "c"
+            end
+            row.amount:SetText(amountText)
+
+            -- Color based on gain/loss
+            if tx.amount >= 0 then
+                row.amount:SetTextColor(COLORS.positive[1], COLORS.positive[2], COLORS.positive[3], 1)
+            else
+                row.amount:SetTextColor(COLORS.negative[1], COLORS.negative[2], COLORS.negative[3], 1)
+            end
+
+            row.time:Show()
+            row.detail:Show()
+            row.amount:Show()
+        else
+            row.time:SetText("")
+            row.detail:SetText("")
+            row.amount:SetText("")
+        end
+    end
+end
+
 -- Minimize window
 function GoldTracker:MinimizeWindow()
     if not miniFrame then
@@ -3219,7 +3460,21 @@ function GoldTracker:MinimizeWindow()
     mainFrame:Hide()
     miniFrame:Show()
     isMinimized = true
-    GoldTracker:UpdateMiniChart()
+
+    -- Update view based on current mode
+    if miniViewMode == "transactions" then
+        miniFrame.chartArea:Hide()
+        miniFrame.txArea:Show()
+        miniFrame.txTab.text:SetTextColor(COLORS.gold[1], COLORS.gold[2], COLORS.gold[3], 1)
+        miniFrame.chartTab.text:SetTextColor(0.6, 0.6, 0.6, 1)
+        GoldTracker:UpdateMiniTransactions()
+    else
+        miniFrame.chartArea:Show()
+        miniFrame.txArea:Hide()
+        miniFrame.chartTab.text:SetTextColor(COLORS.gold[1], COLORS.gold[2], COLORS.gold[3], 1)
+        miniFrame.txTab.text:SetTextColor(0.6, 0.6, 0.6, 1)
+        GoldTracker:UpdateMiniChart()
+    end
 end
 
 -- Restore window from minimized
