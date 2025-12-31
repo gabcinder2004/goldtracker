@@ -21,6 +21,8 @@ local currentMailSubject = nil  -- Subject line for extracting item names
 local originalTakeInboxMoney = nil  -- For hooking TakeInboxMoney
 local originalPlaceAuctionBid = nil  -- For hooking auction purchases
 local pendingAuctionItem = nil  -- Item name of pending auction purchase/bid
+local pendingMailQueue = {}  -- Queue for tracking mail when using "Open All" feature
+local MAIL_DEBUG = false  -- Toggle with /gt debug
 local originalRepairAllItems = nil  -- For hooking RepairAllItems
 local pendingRepair = false         -- Flag to track if repair was just initiated
 local activeFilters = {}  -- Which sources are visible
@@ -89,6 +91,13 @@ local RANGES = {
     {key = "30days", label = "Last 30 Days"},
     {key = "all", label = "All Time"},
 }
+
+-- Debug logging function for mail tracking
+local function MailDebug(msg)
+    if MAIL_DEBUG then
+        DEFAULT_CHAT_FRAME:AddMessage("|cff888888[GT Mail Debug]|r " .. msg)
+    end
+end
 
 -- Utility: Get character key
 local function GetCharKey()
@@ -3122,24 +3131,47 @@ GoldTracker:SetScript("OnEvent", function()
             end
         end
 
+        -- Helper function to queue auction mail (prevents duplicate code)
+        local function QueueAuctionMail(mailIndex, source)
+            local _, _, sender, subject, money = GetInboxHeaderInfo(mailIndex)
+            if sender then
+                currentMailSender = sender
+                local lowerSender = string.lower(sender)
+                local isAuction = string.find(lowerSender, "auction")
+                if isAuction then
+                    currentMailIsAuction = true
+                    currentMailSubject = subject
+                    -- Check for duplicate: same mailIndex already queued recently
+                    local dominated = false
+                    for i = 1, table.getn(pendingMailQueue) do
+                        if pendingMailQueue[i].mailIndex == mailIndex then
+                            dominated = true
+                            MailDebug("[" .. source .. "] Skipping duplicate mail index " .. mailIndex)
+                            break
+                        end
+                    end
+                    if not dominated then
+                        table.insert(pendingMailQueue, {
+                            sender = sender,
+                            subject = subject,
+                            isAuction = true,
+                            money = money,
+                            mailIndex = mailIndex
+                        })
+                        MailDebug("[" .. source .. "] Queued mail #" .. table.getn(pendingMailQueue) .. " (idx:" .. mailIndex .. "): " .. (subject or "no subject") .. " (" .. (money or 0) .. "c)")
+                    end
+                else
+                    currentMailIsAuction = false
+                    currentMailSubject = nil
+                end
+            end
+        end
+
         -- Hook TakeInboxMoney to capture sender before money is taken
         if TakeInboxMoney and not originalTakeInboxMoney then
             originalTakeInboxMoney = TakeInboxMoney
             TakeInboxMoney = function(mailIndex)
-                -- Capture sender and subject before taking money
-                local _, _, sender, subject = GetInboxHeaderInfo(mailIndex)
-                if sender then
-                    currentMailSender = sender
-                    -- Check if this is auction house mail
-                    local lowerSender = string.lower(sender)
-                    if string.find(lowerSender, "auction") then
-                        currentMailIsAuction = true
-                        currentMailSubject = subject
-                    else
-                        currentMailIsAuction = false
-                        currentMailSubject = nil
-                    end
-                end
+                QueueAuctionMail(mailIndex, "Global")
                 return originalTakeInboxMoney(mailIndex)
             end
         end
@@ -3148,20 +3180,7 @@ GoldTracker:SetScript("OnEvent", function()
         if TurtleMail and TurtleMail.TakeInboxMoney then
             local turtleMailOriginal = TurtleMail.TakeInboxMoney
             TurtleMail.TakeInboxMoney = function(mailIndex)
-                -- Capture sender and subject before taking money
-                local _, _, sender, subject = GetInboxHeaderInfo(mailIndex)
-                if sender then
-                    currentMailSender = sender
-                    -- Check if this is auction house mail
-                    local lowerSender = string.lower(sender)
-                    if string.find(lowerSender, "auction") then
-                        currentMailIsAuction = true
-                        currentMailSubject = subject
-                    else
-                        currentMailIsAuction = false
-                        currentMailSubject = nil
-                    end
-                end
+                QueueAuctionMail(mailIndex, "TurtleMail")
                 return turtleMailOriginal(mailIndex)
             end
         end
@@ -3268,19 +3287,40 @@ GoldTracker:SetScript("OnEvent", function()
                         detail = SendMailNameEditBox:GetText()
                     end
                 else
-                    -- Receiving mail - check if it's from the auction house
-                    if currentMailIsAuction and currentMailSubject then
-                        source = "auction"
-                        -- Strip common auction prefixes to get just the item name
-                        detail = currentMailSubject
-                        detail = string.gsub(detail, "^Auction successful: ", "")
-                        detail = string.gsub(detail, "^Auction won: ", "")
-                        detail = string.gsub(detail, "^Sale pending: ", "")
-                        detail = string.gsub(detail, "^Outbid on ", "")
-                        detail = string.gsub(detail, "^Auction expired: ", "")
-                    elseif not detail then
-                        -- Regular mail - use captured sender from mail watcher
-                        detail = currentMailSender
+                    -- Receiving mail - check queue first (for batch processing)
+                    local usedQueue = false
+                    if table.getn(pendingMailQueue) > 0 then
+                        local mailData = table.remove(pendingMailQueue, 1)
+                        MailDebug("Popped from queue: " .. (mailData.subject or "no subject") .. " (queue size now: " .. table.getn(pendingMailQueue) .. ")")
+                        if mailData.isAuction and mailData.subject then
+                            source = "auction"
+                            detail = mailData.subject
+                            detail = string.gsub(detail, "^Auction successful: ", "")
+                            detail = string.gsub(detail, "^Auction won: ", "")
+                            detail = string.gsub(detail, "^Sale pending: ", "")
+                            detail = string.gsub(detail, "^Outbid on ", "")
+                            detail = string.gsub(detail, "^Auction expired: ", "")
+                            MailDebug("Recording auction sale: " .. detail .. " for " .. delta .. "c")
+                            usedQueue = true
+                        else
+                            detail = mailData.sender
+                            usedQueue = true
+                        end
+                    end
+                    -- Fallback to single-variable logic (for manual mail opening)
+                    if not usedQueue then
+                        if currentMailIsAuction and currentMailSubject then
+                            source = "auction"
+                            detail = currentMailSubject
+                            detail = string.gsub(detail, "^Auction successful: ", "")
+                            detail = string.gsub(detail, "^Auction won: ", "")
+                            detail = string.gsub(detail, "^Sale pending: ", "")
+                            detail = string.gsub(detail, "^Outbid on ", "")
+                            detail = string.gsub(detail, "^Auction expired: ", "")
+                            MailDebug("[Fallback] Recording auction sale: " .. detail)
+                        elseif not detail then
+                            detail = currentMailSender
+                        end
                     end
                 end
             end
@@ -3330,6 +3370,11 @@ GoldTracker:SetScript("OnEvent", function()
         currentMailSender = nil
         currentMailIsAuction = false
         currentMailSubject = nil
+        -- Clear mail queue and log if there were leftover entries
+        if table.getn(pendingMailQueue) > 0 then
+            MailDebug("Clearing mail queue on close (" .. table.getn(pendingMailQueue) .. " items remaining)")
+        end
+        pendingMailQueue = {}
         -- Stop mail watcher
         if GoldTracker.mailWatcher then
             GoldTracker.mailWatcher:SetScript("OnUpdate", nil)
@@ -3410,5 +3455,20 @@ end)
 SLASH_GOLDTRACKER1 = "/goldtracker"
 SLASH_GOLDTRACKER2 = "/gt"
 SlashCmdList["GOLDTRACKER"] = function(msg)
-    ToggleWindow()
+    local cmd = string.lower(msg or "")
+    if cmd == "debug" then
+        MAIL_DEBUG = not MAIL_DEBUG
+        if MAIL_DEBUG then
+            DEFAULT_CHAT_FRAME:AddMessage("|cffffd700GoldTracker|r: Mail debug logging |cff00ff00enabled|r")
+        else
+            DEFAULT_CHAT_FRAME:AddMessage("|cffffd700GoldTracker|r: Mail debug logging |cffff0000disabled|r")
+        end
+    elseif cmd == "help" then
+        DEFAULT_CHAT_FRAME:AddMessage("|cffffd700GoldTracker commands:|r")
+        DEFAULT_CHAT_FRAME:AddMessage("  /gt - Toggle main window")
+        DEFAULT_CHAT_FRAME:AddMessage("  /gt debug - Toggle mail debug logging")
+        DEFAULT_CHAT_FRAME:AddMessage("  /gt help - Show this help")
+    else
+        ToggleWindow()
+    end
 end
