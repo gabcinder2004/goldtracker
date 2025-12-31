@@ -58,6 +58,7 @@ local COLORS = {
     background = {0, 0, 0, 0.75},
     border = {0.831, 0.627, 0.090, 0.8},  -- #D4A017
     line = {1, 0.843, 0, 1},              -- #FFD700
+    fill = {1, 0.843, 0, 1},              -- Gold/yellow (alpha controlled by gradient)
     grid = {1, 1, 1, 0.1},
     text = {1, 1, 1, 1},
     gold = {1, 0.843, 0, 1},
@@ -1254,6 +1255,80 @@ local function DrawLine(x1, y1, x2, y2)
     end
 end
 
+-- Chart: Filled area support
+local fillBarIndex = 0
+local fillBars = {}
+
+local function ClearFillBars()
+    for i, tex in ipairs(fillBars) do
+        tex:Hide()
+    end
+    fillBarIndex = 0
+end
+
+-- Gradient bands for fill (fewer bands = better performance)
+local NUM_GRADIENT_BANDS = 16
+local gradientBandHeight = nil  -- Calculated once when chart updates
+
+-- Draw a single vertical fill column with smooth gradient (using opaque colors, no alpha)
+local function DrawFillColumn(x, height, colWidth)
+    if height <= 2 then return end
+
+    -- Base gold color
+    local baseR, baseG, baseB = COLORS.fill[1], COLORS.fill[2], COLORS.fill[3]
+
+    for i = 0, NUM_GRADIENT_BANDS - 1 do
+        local bandBottom = i * gradientBandHeight
+        local bandTop = (i + 1) * gradientBandHeight
+
+        -- Only draw if this band intersects with our column height
+        if bandBottom < height then
+            local segmentBottom = bandBottom
+            local segmentTop = math.min(bandTop, height)
+            local segmentHeight = segmentTop - segmentBottom
+
+            if segmentHeight > 0 then
+                -- Brightness increases from bottom to top (fade to black at bottom)
+                local t = (i + 0.5) / NUM_GRADIENT_BANDS
+                local brightness = 0.08 + (t * t * 0.55)
+
+                fillBarIndex = fillBarIndex + 1
+                local tex = fillBars[fillBarIndex]
+                if not tex then
+                    tex = chartFrame:CreateTexture(nil, "ARTWORK", nil, -1)
+                    tex:SetTexture("Interface\\Buttons\\WHITE8X8")
+                    fillBars[fillBarIndex] = tex
+                end
+                tex:ClearAllPoints()
+                tex:SetWidth(colWidth)
+                tex:SetHeight(segmentHeight)
+                tex:SetPoint("BOTTOMLEFT", chartFrame, "BOTTOMLEFT", x, segmentBottom)
+                tex:SetVertexColor(baseR * brightness, baseG * brightness, baseB * brightness, 1)
+                tex:Show()
+            end
+        end
+    end
+end
+
+-- Draw filled area between two points using linear interpolation (matches the line)
+local function DrawFilledArea(x1, y1, x2, y2)
+    local startX = math.floor(x1)
+    local endX = math.floor(x2)
+    local width = endX - startX
+
+    if width <= 0 then return end
+
+    -- Performance optimization: draw fewer, wider columns
+    local colStep = 3  -- Draw every 3 pixels
+    local colWidth = 4  -- 4px wide (slight overlap)
+
+    for i = 0, width, colStep do
+        local t = width > 0 and (i / width) or 0
+        local height = y1 + (y2 - y1) * t
+        DrawFillColumn(startX + i, height, colWidth)
+    end
+end
+
 -- Chart: Clear existing chart elements
 local function ClearChart()
     for i, tex in ipairs(lineTextures) do
@@ -1263,6 +1338,7 @@ local function ClearChart()
         tex:Hide()
     end
     ClearLineSegments()
+    ClearFillBars()
 end
 
 -- Chart: Draw a dot at a point
@@ -1286,6 +1362,9 @@ function GoldTracker:UpdateChart()
     if not chartFrame then return end
 
     ClearChart()
+
+    -- Initialize gradient band height for fill
+    gradientBandHeight = CHART_HEIGHT / NUM_GRADIENT_BANDS
 
     -- Clear chart data points for hover
     for k in pairs(chartDataPoints) do
@@ -1395,12 +1474,40 @@ function GoldTracker:UpdateChart()
         xAxisLabels[3]:SetText(FormatTimeLabel(maxTime, sameDay, timeRange))
     end
 
-    -- Draw lines between points and store data points for hover
+    -- Draw filled area and lines between points, store data points for hover
     local maxPoints = 150 -- Limit points for performance
     local step = math.max(1, math.floor(count / maxPoints))
     local lastX, lastY = nil, nil
     local dataPointIndex = 0
 
+    -- First pass: Draw the filled area (step-style for accurate representation)
+    for i = 1, count, step do
+        local entry = history[i]
+        local x = ((entry.timestamp - minTime) / timeRange) * CHART_WIDTH
+        local y = ((entry.gold - minGold) / goldRange) * CHART_HEIGHT
+
+        if lastX and lastY then
+            DrawFilledArea(lastX, lastY, x, y)
+        end
+        lastX, lastY = x, y
+    end
+
+    -- Handle last point for fill (ensure we reach the right edge)
+    if count > 0 then
+        local entry = history[count]
+        local x = ((entry.timestamp - minTime) / timeRange) * CHART_WIDTH
+        local y = ((entry.gold - minGold) / goldRange) * CHART_HEIGHT
+        if lastX and lastY and x > lastX then
+            DrawFilledArea(lastX, lastY, x, y)
+        end
+        -- Fill from last point to right edge at constant height
+        if x < CHART_WIDTH then
+            DrawFilledArea(x, y, CHART_WIDTH, y)
+        end
+    end
+
+    -- Second pass: Draw the line on top and store data points for hover
+    lastX, lastY = nil, nil
     for i = 1, count, step do
         local entry = history[i]
         local x = ((entry.timestamp - minTime) / timeRange) * CHART_WIDTH
@@ -2879,14 +2986,84 @@ local function DrawMiniLine(x1, y1, x2, y2)
     end
 end
 
+-- Mini chart fill support
+local miniFillTextures = {}
+local miniFillIndex = 0
+local miniChartHeight = nil  -- Set during UpdateMiniChart
+
+local function ClearMiniFill()
+    for i, tex in ipairs(miniFillTextures) do
+        tex:Hide()
+    end
+    miniFillIndex = 0
+end
+
+-- Draw mini fill column with gradient
+local function DrawMiniFillColumn(x, height, colWidth)
+    if height <= 1 or not miniChartHeight then return end
+
+    local numBands = 8  -- Fewer bands for smaller chart
+    local bandHeight = miniChartHeight / numBands
+    local baseR, baseG, baseB = COLORS.fill[1], COLORS.fill[2], COLORS.fill[3]
+
+    for i = 0, numBands - 1 do
+        local bandBottom = i * bandHeight
+        local bandTop = (i + 1) * bandHeight
+
+        if bandBottom < height then
+            local segmentBottom = bandBottom
+            local segmentTop = math.min(bandTop, height)
+            local segmentHeight = segmentTop - segmentBottom
+
+            if segmentHeight > 0 then
+                local t = (i + 0.5) / numBands
+                local brightness = 0.08 + (t * t * 0.55)
+
+                miniFillIndex = miniFillIndex + 1
+                local tex = miniFillTextures[miniFillIndex]
+                if not tex then
+                    tex = miniFrame.chartArea:CreateTexture(nil, "ARTWORK", nil, -1)
+                    tex:SetTexture("Interface\\Buttons\\WHITE8X8")
+                    miniFillTextures[miniFillIndex] = tex
+                end
+                tex:ClearAllPoints()
+                tex:SetWidth(colWidth)
+                tex:SetHeight(segmentHeight)
+                tex:SetPoint("BOTTOMLEFT", miniFrame.chartArea, "BOTTOMLEFT", x, segmentBottom)
+                tex:SetVertexColor(baseR * brightness, baseG * brightness, baseB * brightness, 1)
+                tex:Show()
+            end
+        end
+    end
+end
+
+-- Draw mini filled area between two points
+local function DrawMiniFillArea(x1, y1, x2, y2)
+    local startX = math.floor(x1)
+    local endX = math.floor(x2)
+    local width = endX - startX
+
+    if width <= 0 then return end
+
+    local colStep = 2
+    local colWidth = 3
+
+    for i = 0, width, colStep do
+        local t = width > 0 and (i / width) or 0
+        local height = y1 + (y2 - y1) * t
+        DrawMiniFillColumn(startX + i, height, colWidth)
+    end
+end
+
 function GoldTracker:UpdateMiniChart()
     if not miniFrame or not miniFrame:IsVisible() then return end
 
-    -- Clear old lines
+    -- Clear old lines and fill
     for i, tex in ipairs(miniLineTextures) do
         tex:Hide()
     end
     miniSegmentIndex = 0
+    ClearMiniFill()
 
     -- Get history data
     local data = InitCharacterData()
@@ -2939,12 +3116,33 @@ function GoldTracker:UpdateMiniChart()
     -- Chart dimensions
     local chartWidth = MINI_WIDTH - 10
     local chartHeight = MINI_HEIGHT - 23
+    miniChartHeight = chartHeight  -- Set for gradient calculations
 
-    -- Draw lines
+    -- Draw fill first, then lines on top
     local maxPoints = 30
     local step = math.max(1, math.floor(count / maxPoints))
     local lastX, lastY = nil, nil
 
+    -- First pass: draw fill
+    for i = 1, count, step do
+        local entry = history[i]
+        local x = ((entry.timestamp - minTime) / timeRange) * chartWidth
+        local y = ((entry.gold - minGold) / goldRange) * chartHeight
+
+        if lastX then
+            DrawMiniFillArea(lastX, lastY, x, y)
+        end
+
+        lastX, lastY = x, y
+    end
+
+    -- Fill to right edge
+    if lastX and lastY then
+        DrawMiniFillArea(lastX, lastY, chartWidth, lastY)
+    end
+
+    -- Second pass: draw lines
+    lastX, lastY = nil, nil
     for i = 1, count, step do
         local entry = history[i]
         local x = ((entry.timestamp - minTime) / timeRange) * chartWidth
