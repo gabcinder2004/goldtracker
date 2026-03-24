@@ -28,6 +28,8 @@ local pendingRepair = false         -- Flag to track if repair was just initiate
 local activeFilters = {}  -- Which sources are visible
 local currentPage = 1
 local detailFilter = nil  -- Filter by specific detail text (player name, item name, etc.)
+local searchText = ""    -- Free-text search across detail/source fields
+local profitFilter = "all"  -- "all", "positive", "negative"
 local transactionsFrame = nil
 local statisticsFrame = nil
 local tabButtons = {}
@@ -56,7 +58,7 @@ local CHART_HEIGHT = FRAME_HEIGHT - CHART_TOP_OFFSET - CHART_BOTTOM_OFFSET
 local TAB_BAR_HEIGHT = 22
 
 local COLORS = {
-    background = {0, 0, 0, 0.75},
+    background = {0, 0, 0, 0.92},
     border = {0.831, 0.627, 0.090, 0.8},  -- #D4A017
     line = {1, 0.843, 0, 1},              -- #FFD700
     fill = {1, 0.843, 0, 1},              -- Gold/yellow (alpha controlled by gradient)
@@ -431,16 +433,36 @@ function GoldTracker:GetFilteredTransactions()
         cutoff = 0
     end
 
+    -- Precompute lowercased search text
+    local lowerSearch = searchText and string.len(searchText) > 0 and string.lower(searchText) or nil
+
     local filtered = {}
     for i = table.getn(data.transactions), 1, -1 do  -- Reverse order (newest first)
         local tx = data.transactions[i]
         if tx.timestamp >= cutoff and activeFilters[tx.source] then
             -- Apply detail filter if set
+            local passesDetail = true
             if detailFilter then
-                if tx.detail and tx.detail == detailFilter then
-                    table.insert(filtered, tx)
-                end
-            else
+                passesDetail = tx.detail and tx.detail == detailFilter
+            end
+
+            -- Apply free-text search filter
+            local passesSearch = true
+            if lowerSearch then
+                local matchDetail = tx.detail and string.find(string.lower(tx.detail), lowerSearch, 1, true)
+                local matchSource = tx.source and string.find(string.lower(tx.source), lowerSearch, 1, true)
+                passesSearch = matchDetail or matchSource
+            end
+
+            -- Apply profit filter
+            local passesProfitFilter = true
+            if profitFilter == "positive" then
+                passesProfitFilter = tx.amount > 0
+            elseif profitFilter == "negative" then
+                passesProfitFilter = tx.amount < 0
+            end
+
+            if passesDetail and passesSearch and passesProfitFilter then
                 table.insert(filtered, tx)
             end
         end
@@ -1087,8 +1109,10 @@ function GoldTracker:FilterBySource(sourceKey)
         end
     end
 
-    -- Clear detail filter
+    -- Clear detail filter and search
     detailFilter = nil
+    searchText = ""
+    profitFilter = "all"
 
     -- Switch to transactions tab
     currentPage = 1
@@ -1099,6 +1123,13 @@ function GoldTracker:FilterBySource(sourceKey)
         for key, btn in pairs(transactionsFrame.filterButtons) do
             btn:UpdateState()
         end
+    end
+    -- Update search bar and profit toggle
+    if transactionsFrame and transactionsFrame.searchBox then
+        transactionsFrame.searchBox:SetText("")
+    end
+    if transactionsFrame then
+        GoldTracker:UpdateProfitToggle()
     end
 end
 
@@ -1111,8 +1142,10 @@ function GoldTracker:FilterByDetail(sourceKey, detail)
         end
     end
 
-    -- Set detail filter
+    -- Set detail filter and populate search bar
     detailFilter = detail
+    searchText = detail or ""
+    profitFilter = "all"
 
     -- Switch to transactions tab
     currentPage = 1
@@ -1123,6 +1156,13 @@ function GoldTracker:FilterByDetail(sourceKey, detail)
         for key, btn in pairs(transactionsFrame.filterButtons) do
             btn:UpdateState()
         end
+    end
+    -- Sync search bar text
+    if transactionsFrame and transactionsFrame.searchBox then
+        transactionsFrame.searchBox:SetText(searchText)
+    end
+    if transactionsFrame then
+        GoldTracker:UpdateProfitToggle()
     end
 end
 
@@ -1143,19 +1183,28 @@ end
 function GoldTracker:UpdateTransactionList()
     if not transactionsFrame then return end
 
-    -- Update detail filter indicator
+    -- Keep old detailFilterFrame hidden (replaced by search bar)
     if transactionsFrame.detailFilterFrame then
-        if detailFilter then
-            local displayText = detailFilter
-            if string.len(displayText) > 14 then
-                displayText = string.sub(displayText, 1, 13) .. ".."
+        transactionsFrame.detailFilterFrame:Hide()
+    end
+
+    -- Update search bar placeholder visibility
+    if transactionsFrame.searchBox then
+        local currentText = transactionsFrame.searchBox:GetText()
+        if currentText ~= searchText then
+            transactionsFrame.searchBox:SetText(searchText)
+        end
+        if transactionsFrame.searchPlaceholder then
+            if searchText and string.len(searchText) > 0 then
+                transactionsFrame.searchPlaceholder:Hide()
+            else
+                transactionsFrame.searchPlaceholder:Show()
             end
-            transactionsFrame.detailFilterFrame.text:SetText(displayText)
-            transactionsFrame.detailFilterFrame:Show()
-        else
-            transactionsFrame.detailFilterFrame:Hide()
         end
     end
+
+    -- Update profit toggle button visuals
+    GoldTracker:UpdateProfitToggle()
 
     local filtered = self:GetFilteredTransactions()
     local totalCount = table.getn(filtered)
@@ -1228,6 +1277,29 @@ function GoldTracker:UpdateTransactionList()
             row:Show()
         else
             row:Hide()
+        end
+    end
+end
+
+-- Transactions: Update profit toggle button visuals
+function GoldTracker:UpdateProfitToggle()
+    if not transactionsFrame then return end
+    if transactionsFrame.profitPlusBtn then
+        if profitFilter == "positive" then
+            transactionsFrame.profitPlusBtn.label:SetTextColor(0.1, 0.1, 0.1, 1)
+            transactionsFrame.profitPlusBtn.bg:SetVertexColor(COLORS.positive[1], COLORS.positive[2], COLORS.positive[3], 1)
+        else
+            transactionsFrame.profitPlusBtn.label:SetTextColor(COLORS.positive[1], COLORS.positive[2], COLORS.positive[3], 1)
+            transactionsFrame.profitPlusBtn.bg:SetVertexColor(0.12, 0.12, 0.12, 0.9)
+        end
+    end
+    if transactionsFrame.profitMinusBtn then
+        if profitFilter == "negative" then
+            transactionsFrame.profitMinusBtn.label:SetTextColor(0.1, 0.1, 0.1, 1)
+            transactionsFrame.profitMinusBtn.bg:SetVertexColor(COLORS.negative[1], COLORS.negative[2], COLORS.negative[3], 1)
+        else
+            transactionsFrame.profitMinusBtn.label:SetTextColor(COLORS.negative[1], COLORS.negative[2], COLORS.negative[3], 1)
+            transactionsFrame.profitMinusBtn.bg:SetVertexColor(0.12, 0.12, 0.12, 0.9)
         end
     end
 end
@@ -1729,6 +1801,11 @@ SwitchTab = function(tabKey)
             transactionsFrame:Show()
             -- Clear detail filter when explicitly switching to transactions
             detailFilter = nil
+            searchText = ""
+            profitFilter = "all"
+            if transactionsFrame.searchBox then
+                transactionsFrame.searchBox:SetText("")
+            end
             GoldTracker:UpdateTransactionList()
         else
             transactionsFrame:Hide()
@@ -1834,56 +1911,171 @@ local function CreateTransactionsFrame()
         btn:UpdateState()
     end
 
-    -- Detail filter indicator
+    -- Detail filter frame (kept for backward compat but hidden by search bar logic)
     transactionsFrame.detailFilterFrame = CreateFrame("Frame", nil, transactionsFrame.filterBar)
-    transactionsFrame.detailFilterFrame:SetPoint("LEFT", transactionsFrame.filterBar, "LEFT", 320, 0)
-    transactionsFrame.detailFilterFrame:SetWidth(120)
-    transactionsFrame.detailFilterFrame:SetHeight(20)
+    transactionsFrame.detailFilterFrame:SetWidth(1)
+    transactionsFrame.detailFilterFrame:SetHeight(1)
     transactionsFrame.detailFilterFrame:Hide()
-
-    transactionsFrame.detailFilterFrame.bg = transactionsFrame.detailFilterFrame:CreateTexture(nil, "BACKGROUND")
-    transactionsFrame.detailFilterFrame.bg:SetTexture("Interface\\Buttons\\WHITE8X8")
-    transactionsFrame.detailFilterFrame.bg:SetAllPoints()
-    transactionsFrame.detailFilterFrame.bg:SetVertexColor(0.15, 0.15, 0.15, 0.9)
-
     transactionsFrame.detailFilterFrame.text = transactionsFrame.detailFilterFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    transactionsFrame.detailFilterFrame.text:SetPoint("LEFT", transactionsFrame.detailFilterFrame, "LEFT", 5, 0)
-    transactionsFrame.detailFilterFrame.text:SetWidth(90)
-    transactionsFrame.detailFilterFrame.text:SetJustifyH("LEFT")
-    transactionsFrame.detailFilterFrame.text:SetTextColor(1, 0.843, 0, 1)
 
-    transactionsFrame.detailFilterFrame.clearBtn = CreateFrame("Button", nil, transactionsFrame.detailFilterFrame)
-    transactionsFrame.detailFilterFrame.clearBtn:SetWidth(14)
-    transactionsFrame.detailFilterFrame.clearBtn:SetHeight(14)
-    transactionsFrame.detailFilterFrame.clearBtn:SetPoint("RIGHT", transactionsFrame.detailFilterFrame, "RIGHT", -3, 0)
+    -- Search bar (right side of filter bar)
+    local searchBg = CreateFrame("Frame", nil, transactionsFrame.filterBar)
+    searchBg:SetPoint("LEFT", transactionsFrame.filterBar, "LEFT", 312, 0)
+    searchBg:SetWidth(140)
+    searchBg:SetHeight(20)
 
-    transactionsFrame.detailFilterFrame.clearBtn.text = transactionsFrame.detailFilterFrame.clearBtn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    transactionsFrame.detailFilterFrame.clearBtn.text:SetPoint("CENTER", 0, 0)
-    transactionsFrame.detailFilterFrame.clearBtn.text:SetText("x")
-    transactionsFrame.detailFilterFrame.clearBtn.text:SetTextColor(0.8, 0.8, 0.8, 1)
+    local searchBgTex = searchBg:CreateTexture(nil, "BACKGROUND")
+    searchBgTex:SetTexture("Interface\\Buttons\\WHITE8X8")
+    searchBgTex:SetAllPoints()
+    searchBgTex:SetVertexColor(0.08, 0.08, 0.08, 0.9)
 
-    transactionsFrame.detailFilterFrame.clearBtn:SetScript("OnClick", function()
+    local searchBorder = searchBg:CreateTexture(nil, "BORDER")
+    searchBorder:SetTexture("Interface\\Buttons\\WHITE8X8")
+    searchBorder:SetPoint("TOPLEFT", searchBg, "TOPLEFT", -1, 1)
+    searchBorder:SetPoint("BOTTOMRIGHT", searchBg, "BOTTOMRIGHT", 1, -1)
+    searchBorder:SetVertexColor(0.4, 0.35, 0.1, 0.8)
+
+    transactionsFrame.searchBox = CreateFrame("EditBox", "GoldTrackerSearchBox", searchBg)
+    transactionsFrame.searchBox:SetFontObject(GameFontNormalSmall)
+    transactionsFrame.searchBox:SetPoint("LEFT", searchBg, "LEFT", 4, 0)
+    transactionsFrame.searchBox:SetPoint("RIGHT", searchBg, "RIGHT", -18, 0)
+    transactionsFrame.searchBox:SetHeight(18)
+    transactionsFrame.searchBox:SetAutoFocus(false)
+    transactionsFrame.searchBox:SetMaxLetters(50)
+    transactionsFrame.searchBox:SetTextColor(1, 1, 1, 1)
+
+    -- Placeholder text
+    transactionsFrame.searchPlaceholder = searchBg:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    transactionsFrame.searchPlaceholder:SetPoint("LEFT", searchBg, "LEFT", 5, 0)
+    transactionsFrame.searchPlaceholder:SetText("Search detail / source...")
+    transactionsFrame.searchPlaceholder:SetTextColor(0.4, 0.4, 0.4, 1)
+
+    -- Clear search button (x inside search box)
+    local searchClearBtn = CreateFrame("Button", nil, searchBg)
+    searchClearBtn:SetWidth(16)
+    searchClearBtn:SetHeight(16)
+    searchClearBtn:SetPoint("RIGHT", searchBg, "RIGHT", -1, 0)
+    local searchClearTxt = searchClearBtn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    searchClearTxt:SetPoint("CENTER", 0, 0)
+    searchClearTxt:SetText("x")
+    searchClearTxt:SetTextColor(0.5, 0.5, 0.5, 1)
+
+    searchClearBtn:SetScript("OnClick", function()
+        searchText = ""
         detailFilter = nil
-        for i, source in ipairs(SOURCES) do
-            if source.key ~= "all" then
-                activeFilters[source.key] = true
+        transactionsFrame.searchBox:SetText("")
+        transactionsFrame.searchBox:ClearFocus()
+        transactionsFrame.searchPlaceholder:Show()
+        currentPage = 1
+        GoldTracker:UpdateTransactionList()
+    end)
+    searchClearBtn:SetScript("OnEnter", function()
+        searchClearTxt:SetTextColor(1, 0.843, 0, 1)
+    end)
+    searchClearBtn:SetScript("OnLeave", function()
+        searchClearTxt:SetTextColor(0.5, 0.5, 0.5, 1)
+    end)
+
+    transactionsFrame.searchBox:SetScript("OnTextChanged", function()
+        searchText = this:GetText() or ""
+        detailFilter = nil
+        if transactionsFrame.searchPlaceholder then
+            if string.len(searchText) > 0 then
+                transactionsFrame.searchPlaceholder:Hide()
+            else
+                transactionsFrame.searchPlaceholder:Show()
             end
         end
-        for key, btn in pairs(transactionsFrame.filterButtons) do
-            btn:UpdateState()
-        end
-        transactionsFrame.detailFilterFrame:Hide()
         currentPage = 1
         GoldTracker:UpdateTransactionList()
     end)
 
-    transactionsFrame.detailFilterFrame.clearBtn:SetScript("OnEnter", function()
-        this.text:SetTextColor(1, 0.843, 0, 1)
+    transactionsFrame.searchBox:SetScript("OnEscapePressed", function()
+        searchText = ""
+        detailFilter = nil
+        this:SetText("")
+        this:ClearFocus()
+        if transactionsFrame.searchPlaceholder then
+            transactionsFrame.searchPlaceholder:Show()
+        end
+        currentPage = 1
+        GoldTracker:UpdateTransactionList()
     end)
 
-    transactionsFrame.detailFilterFrame.clearBtn:SetScript("OnLeave", function()
-        this.text:SetTextColor(0.8, 0.8, 0.8, 1)
+    -- Profit filter toggle buttons (+ and -)
+    local profitPlusBtn = CreateFrame("Button", nil, transactionsFrame.filterBar)
+    profitPlusBtn:SetWidth(28)
+    profitPlusBtn:SetHeight(20)
+    profitPlusBtn:SetPoint("LEFT", searchBg, "RIGHT", 4, 0)
+
+    profitPlusBtn.bg = profitPlusBtn:CreateTexture(nil, "BACKGROUND")
+    profitPlusBtn.bg:SetTexture("Interface\\Buttons\\WHITE8X8")
+    profitPlusBtn.bg:SetAllPoints()
+    profitPlusBtn.bg:SetVertexColor(0.12, 0.12, 0.12, 0.9)
+
+    profitPlusBtn.label = profitPlusBtn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    profitPlusBtn.label:SetPoint("CENTER", 0, 0)
+    profitPlusBtn.label:SetText("+")
+    profitPlusBtn.label:SetTextColor(COLORS.positive[1], COLORS.positive[2], COLORS.positive[3], 1)
+
+    profitPlusBtn:SetScript("OnClick", function()
+        if profitFilter == "positive" then
+            profitFilter = "all"
+        else
+            profitFilter = "positive"
+        end
+        currentPage = 1
+        local data = InitCharacterData()
+        if data then data.profitFilter = profitFilter end
+        GoldTracker:UpdateProfitToggle()
+        GoldTracker:UpdateTransactionList()
     end)
+    profitPlusBtn:SetScript("OnEnter", function()
+        GameTooltip:SetOwner(this, "ANCHOR_BOTTOM")
+        GameTooltip:SetText("Show income only", 1, 1, 1)
+        GameTooltip:Show()
+    end)
+    profitPlusBtn:SetScript("OnLeave", function()
+        GameTooltip:Hide()
+    end)
+    transactionsFrame.profitPlusBtn = profitPlusBtn
+
+    local profitMinusBtn = CreateFrame("Button", nil, transactionsFrame.filterBar)
+    profitMinusBtn:SetWidth(28)
+    profitMinusBtn:SetHeight(20)
+    profitMinusBtn:SetPoint("LEFT", profitPlusBtn, "RIGHT", 3, 0)
+
+    profitMinusBtn.bg = profitMinusBtn:CreateTexture(nil, "BACKGROUND")
+    profitMinusBtn.bg:SetTexture("Interface\\Buttons\\WHITE8X8")
+    profitMinusBtn.bg:SetAllPoints()
+    profitMinusBtn.bg:SetVertexColor(0.12, 0.12, 0.12, 0.9)
+
+    profitMinusBtn.label = profitMinusBtn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    profitMinusBtn.label:SetPoint("CENTER", 0, 0)
+    profitMinusBtn.label:SetText("-")
+    profitMinusBtn.label:SetTextColor(COLORS.negative[1], COLORS.negative[2], COLORS.negative[3], 1)
+
+    profitMinusBtn:SetScript("OnClick", function()
+        if profitFilter == "negative" then
+            profitFilter = "all"
+        else
+            profitFilter = "negative"
+        end
+        currentPage = 1
+        local data = InitCharacterData()
+        if data then data.profitFilter = profitFilter end
+        GoldTracker:UpdateProfitToggle()
+        GoldTracker:UpdateTransactionList()
+    end)
+    profitMinusBtn:SetScript("OnEnter", function()
+        GameTooltip:SetOwner(this, "ANCHOR_BOTTOM")
+        GameTooltip:SetText("Show expenses only", 1, 1, 1)
+        GameTooltip:Show()
+    end)
+    profitMinusBtn:SetScript("OnLeave", function()
+        GameTooltip:Hide()
+    end)
+    transactionsFrame.profitMinusBtn = profitMinusBtn
 
     -- Table container
     transactionsFrame.tableFrame = CreateFrame("Frame", nil, transactionsFrame)
@@ -2529,6 +2721,7 @@ local function CreateMainFrame()
     mainFrame:EnableMouse(true)
     mainFrame:SetClampedToScreen(true)
     mainFrame:SetFrameStrata("MEDIUM")
+    mainFrame:SetToplevel(true)
 
     -- Background
     mainFrame.bg = mainFrame:CreateTexture(nil, "BACKGROUND")
@@ -3491,6 +3684,7 @@ function GoldTracker:RestoreWindow()
     end
 
     mainFrame:Show()
+    mainFrame:Raise()
     isMinimized = false
     GoldTracker:UpdateChart()
 end
@@ -3634,6 +3828,13 @@ GoldTracker:SetScript("OnEvent", function()
         -- Helper function to queue auction mail (prevents duplicate code)
         local function QueueAuctionMail(mailIndex, source)
             local _, _, sender, subject, money = GetInboxHeaderInfo(mailIndex)
+            -- Skip mails with no money: they won't trigger PLAYER_MONEY, so queuing
+            -- them would desync the queue and cause the next real transaction to pop
+            -- the wrong entry (e.g. expired AH item with no refund before a sale).
+            if not money or money == 0 then
+                MailDebug("[" .. source .. "] Skipping zero-money mail (idx:" .. mailIndex .. "): " .. (subject or "no subject"))
+                return
+            end
             if sender then
                 currentMailSender = sender
                 local lowerSender = string.lower(sender)
@@ -3721,6 +3922,11 @@ GoldTracker:SetScript("OnEvent", function()
             currentRange = data.selectedRange
         else
             currentRange = "1day"
+        end
+
+        -- Restore saved profit filter
+        if data and data.profitFilter then
+            profitFilter = data.profitFilter
         end
 
         -- Create minimap button
