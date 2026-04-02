@@ -1533,7 +1533,7 @@ function GoldTracker:UpdateChart()
     local rawRange = maxGold - minGold
     if rawRange == 0 then rawRange = 10000 end -- Default 1g range
     -- Add small padding before calculating nice bounds
-    local paddedMin = minGold - (rawRange * 0.05)
+    local paddedMin = math.max(0, minGold - (rawRange * 0.05))
     local paddedMax = maxGold + (rawRange * 0.05)
     local niceMin, niceMax, niceStep = GetNiceAxisBounds(paddedMin, paddedMax, gridCount)
     minGold = niceMin
