@@ -12,6 +12,7 @@ local gridLines = {}
 local sessionStart = nil
 local sessionStartGold = nil
 local currentRange = "1day"
+local chartMode = "balance"  -- "balance" or "rate"
 local currentTab = "chart"  -- "chart" or "transactions"
 local transactionContext = nil  -- Current context for source detection
 local transactionDetail = nil   -- Detail info (NPC name, player name, etc.)
@@ -51,7 +52,7 @@ local MINI_WIDTH = 200
 local MINI_HEIGHT = 85
 local CHART_PADDING_LEFT = 55
 local CHART_PADDING_RIGHT = 15
-local CHART_TOP_OFFSET = 55  -- Increased for tab bar
+local CHART_TOP_OFFSET = 70  -- Increased for tab bar + chart mode toggle
 local CHART_BOTTOM_OFFSET = 70
 local CHART_WIDTH = FRAME_WIDTH - CHART_PADDING_LEFT - CHART_PADDING_RIGHT
 local CHART_HEIGHT = FRAME_HEIGHT - CHART_TOP_OFFSET - CHART_BOTTOM_OFFSET
@@ -69,6 +70,8 @@ local COLORS = {
     copper = {0.72, 0.45, 0.2, 1},
     positive = {0.2, 0.8, 0.2, 1},
     negative = {0.8, 0.2, 0.2, 1},
+    rateLine = {0.4, 0.8, 0.95, 1},
+    rateFill = {0.4, 0.8, 0.95, 1},
 }
 
 local SOURCES = {
@@ -96,6 +99,28 @@ local RANGES = {
     {key = "7days", label = "Last 7 Days"},
     {key = "30days", label = "Last 30 Days"},
     {key = "all", label = "All Time"},
+}
+
+local RATE_WINDOWS = {
+    session = 300,         -- 5 minutes
+    ["3hours"] = 900,      -- 15 minutes
+    ["6hours"] = 1800,     -- 30 minutes
+    ["1day"] = 3600,       -- 1 hour
+    ["3days"] = 21600,     -- 6 hours
+    ["7days"] = 86400,     -- 1 day
+    ["30days"] = 604800,   -- 1 week
+    ["all"] = 2592000,     -- 1 month (30 days)
+}
+
+local RATE_WINDOW_LABELS = {
+    session = "5 min",
+    ["3hours"] = "15 min",
+    ["6hours"] = "30 min",
+    ["1day"] = "1 hour",
+    ["3days"] = "6 hours",
+    ["7days"] = "1 day",
+    ["30days"] = "1 week",
+    ["all"] = "1 month",
 }
 
 -- Debug logging function for mail tracking
@@ -404,6 +429,69 @@ local function GetFilteredHistory()
     end
 
     return filtered
+end
+
+-- Compute rolling gold/hr rate data from history snapshots
+local function ComputeRateData(history)
+    local count = table.getn(history)
+    if count < 2 then return {} end
+
+    local windowSize = RATE_WINDOWS[currentRange] or 3600
+    local rateData = {}
+
+    for i = 1, count do
+        local current = history[i]
+        local windowStart = current.timestamp - windowSize
+        local startGold = nil
+        local startTime = nil
+
+        -- Walk backward to find the point just before or at the window boundary
+        for j = i, 1, -1 do
+            if history[j].timestamp <= windowStart then
+                -- Interpolate between this point and the next to get exact window boundary value
+                if j < i then
+                    local t0 = history[j].timestamp
+                    local t1 = history[j + 1].timestamp
+                    local g0 = history[j].gold
+                    local g1 = history[j + 1].gold
+                    if t1 > t0 then
+                        local frac = (windowStart - t0) / (t1 - t0)
+                        startGold = g0 + (g1 - g0) * frac
+                    else
+                        startGold = g0
+                    end
+                else
+                    startGold = history[j].gold
+                end
+                startTime = windowStart
+                break
+            end
+        end
+
+        -- If no point before window start, use earliest point if >= 25% window covered
+        if not startGold then
+            local elapsed = current.timestamp - history[1].timestamp
+            if elapsed >= windowSize * 0.25 then
+                startGold = history[1].gold
+                startTime = history[1].timestamp
+            end
+        end
+
+        if startGold and startTime then
+            local elapsed = current.timestamp - startTime
+            if elapsed > 0 then
+                local goldChange = current.gold - startGold
+                local hoursElapsed = elapsed / 3600
+                local rate = goldChange / hoursElapsed  -- copper per hour
+                table.insert(rateData, {
+                    timestamp = current.timestamp,
+                    rate = rate,
+                })
+            end
+        end
+    end
+
+    return rateData
 end
 
 -- Transactions: Get filtered transaction list
@@ -1315,7 +1403,8 @@ local function ClearLineSegments()
     lineSegmentIndex = 0
 end
 
-local function DrawLineSegment(x, y)
+local function DrawLineSegment(x, y, color)
+    local c = color or COLORS.line
     lineSegmentIndex = lineSegmentIndex + 1
     local tex = lineSegments[lineSegmentIndex]
     if not tex then
@@ -1327,11 +1416,11 @@ local function DrawLineSegment(x, y)
     end
     tex:ClearAllPoints()
     tex:SetPoint("CENTER", chartFrame, "BOTTOMLEFT", x, y)
-    tex:SetVertexColor(COLORS.line[1], COLORS.line[2], COLORS.line[3], COLORS.line[4])
+    tex:SetVertexColor(c[1], c[2], c[3], c[4])
     tex:Show()
 end
 
-local function DrawLine(x1, y1, x2, y2)
+local function DrawLine(x1, y1, x2, y2, color)
     local dx = x2 - x1
     local dy = y2 - y1
     local length = math.sqrt(dx * dx + dy * dy)
@@ -1342,7 +1431,7 @@ local function DrawLine(x1, y1, x2, y2)
         local t = i / steps
         local x = x1 + dx * t
         local y = y1 + dy * t
-        DrawLineSegment(x, y)
+        DrawLineSegment(x, y, color)
     end
 end
 
@@ -1362,11 +1451,12 @@ local NUM_GRADIENT_BANDS = 16
 local gradientBandHeight = nil  -- Calculated once when chart updates
 
 -- Draw a single vertical fill column with smooth gradient (using opaque colors, no alpha)
-local function DrawFillColumn(x, height, colWidth)
+local function DrawFillColumn(x, height, colWidth, color)
     if height <= 2 then return end
 
-    -- Base gold color
-    local baseR, baseG, baseB = COLORS.fill[1], COLORS.fill[2], COLORS.fill[3]
+    -- Base color
+    local c = color or COLORS.fill
+    local baseR, baseG, baseB = c[1], c[2], c[3]
 
     for i = 0, NUM_GRADIENT_BANDS - 1 do
         local bandBottom = i * gradientBandHeight
@@ -1402,7 +1492,7 @@ local function DrawFillColumn(x, height, colWidth)
 end
 
 -- Draw filled area between two points using linear interpolation (matches the line)
-local function DrawFilledArea(x1, y1, x2, y2)
+local function DrawFilledArea(x1, y1, x2, y2, color)
     local startX = math.floor(x1)
     local endX = math.floor(x2)
     local width = endX - startX
@@ -1416,7 +1506,7 @@ local function DrawFilledArea(x1, y1, x2, y2)
     for i = 0, width, colStep do
         local t = width > 0 and (i / width) or 0
         local height = y1 + (y2 - y1) * t + 1  -- Add 1px to reach the line
-        DrawFillColumn(startX + i, height, colWidth)
+        DrawFillColumn(startX + i, height, colWidth, color)
     end
 end
 
@@ -1448,6 +1538,173 @@ local function DrawDot(x, y, index)
     tex:Show()
 end
 
+-- Chart: Update and redraw rate chart
+function GoldTracker:UpdateRateChart(history)
+    if not chartFrame then return end
+
+    ClearChart()
+    gradientBandHeight = CHART_HEIGHT / NUM_GRADIENT_BANDS
+
+    for k in pairs(chartDataPoints) do
+        chartDataPoints[k] = nil
+    end
+
+    GoldTracker:UpdateStats(history)
+
+    local rateData = ComputeRateData(history)
+    local count = table.getn(rateData)
+
+    if count < 2 then
+        -- Show hint text
+        if not chartFrame.noDataText then
+            chartFrame.noDataText = chartFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+            chartFrame.noDataText:SetPoint("CENTER", chartFrame, "CENTER", 0, -20)
+            chartFrame.noDataText:SetTextColor(0.5, 0.5, 0.5, 1)
+        end
+        chartFrame.noDataText:SetText("Not enough data for rate chart...")
+        chartFrame.noDataText:Show()
+
+        -- Clear Y-axis and X-axis labels
+        for i = 1, 5 do
+            if yAxisLabels[i] then yAxisLabels[i]:SetText("") end
+        end
+        for i = 1, 3 do
+            if xAxisLabels[i] then xAxisLabels[i]:SetText("") end
+        end
+        return
+    end
+
+    if chartFrame.noDataText then
+        chartFrame.noDataText:Hide()
+    end
+
+    -- Find min/max rate for Y-axis scaling
+    local minRate = rateData[1].rate
+    local maxRate = rateData[1].rate
+    local minTime = rateData[1].timestamp
+    local maxTime = rateData[count].timestamp
+
+    for i, entry in ipairs(rateData) do
+        if entry.rate < minRate then minRate = entry.rate end
+        if entry.rate > maxRate then maxRate = entry.rate end
+    end
+
+    -- Calculate nice Y-axis bounds
+    local gridCount = 4
+    local rawRange = maxRate - minRate
+    if rawRange == 0 then rawRange = 10000 end  -- Default 1g/hr range
+    local paddedMin = minRate - (rawRange * 0.05)
+    local paddedMax = maxRate + (rawRange * 0.05)
+    local niceMin, niceMax, niceStep = GetNiceAxisBounds(paddedMin, paddedMax, gridCount)
+    minRate = niceMin
+    maxRate = niceMax
+    local rateRange = maxRate - minRate
+
+    local timeRange = maxTime - minTime
+    if timeRange == 0 then timeRange = 1 end
+
+    -- Update Y-axis labels with "/hr" suffix
+    for i = 0, gridCount do
+        if yAxisLabels[i + 1] then
+            local rateValue = minRate + (niceStep * i)
+            local prefix = rateValue < 0 and "-" or ""
+            yAxisLabels[i + 1]:SetText(prefix .. FormatGoldCompact(math.abs(rateValue), niceStep) .. "/hr")
+        end
+    end
+
+    -- Update X-axis labels
+    local sameDay = IsSameDay(minTime, maxTime)
+    if xAxisLabels[1] then
+        xAxisLabels[1]:SetText(FormatTimeLabel(minTime, sameDay, timeRange))
+    end
+    if xAxisLabels[2] then
+        local midTime = minTime + (timeRange / 2)
+        xAxisLabels[2]:SetText(FormatTimeLabel(midTime, sameDay, timeRange))
+    end
+    if xAxisLabels[3] then
+        xAxisLabels[3]:SetText(FormatTimeLabel(maxTime, sameDay, timeRange))
+    end
+
+    -- Draw filled area and lines
+    local maxPoints = 150
+    local step = math.max(1, math.floor(count / maxPoints))
+    local lastX, lastY = nil, nil
+    local dataPointIndex = 0
+    local lineColor = COLORS.rateLine
+    local fillColor = COLORS.rateFill
+
+    -- First pass: filled area
+    for i = 1, count, step do
+        local entry = rateData[i]
+        local x = ((entry.timestamp - minTime) / timeRange) * CHART_WIDTH
+        local y = ((entry.rate - minRate) / rateRange) * CHART_HEIGHT
+
+        if lastX and lastY then
+            DrawFilledArea(lastX, lastY, x, y, fillColor)
+        end
+        lastX, lastY = x, y
+    end
+
+    -- Handle last point for fill
+    if count > 0 then
+        local entry = rateData[count]
+        local x = ((entry.timestamp - minTime) / timeRange) * CHART_WIDTH
+        local y = ((entry.rate - minRate) / rateRange) * CHART_HEIGHT
+        if lastX and lastY and x > lastX then
+            DrawFilledArea(lastX, lastY, x, y, fillColor)
+        end
+        if x < CHART_WIDTH then
+            DrawFilledArea(x, y, CHART_WIDTH, y, fillColor)
+        end
+    end
+
+    -- Second pass: line on top + data points for hover
+    lastX, lastY = nil, nil
+    for i = 1, count, step do
+        local entry = rateData[i]
+        local x = ((entry.timestamp - minTime) / timeRange) * CHART_WIDTH
+        local y = ((entry.rate - minRate) / rateRange) * CHART_HEIGHT
+
+        dataPointIndex = dataPointIndex + 1
+        chartDataPoints[dataPointIndex] = {
+            x = x,
+            y = y,
+            rate = entry.rate,
+            timestamp = entry.timestamp
+        }
+
+        if lastX and lastY then
+            DrawLine(lastX, lastY, x, y, lineColor)
+        end
+        lastX, lastY = x, y
+    end
+
+    -- Include last point
+    if step > 1 and count > 0 then
+        local entry = rateData[count]
+        local x = ((entry.timestamp - minTime) / timeRange) * CHART_WIDTH
+        local y = ((entry.rate - minRate) / rateRange) * CHART_HEIGHT
+
+        dataPointIndex = dataPointIndex + 1
+        chartDataPoints[dataPointIndex] = {
+            x = x,
+            y = y,
+            rate = entry.rate,
+            timestamp = entry.timestamp
+        }
+
+        if lastX and lastY then
+            DrawLine(lastX, lastY, x, y, lineColor)
+        end
+        lastX, lastY = x, y
+    end
+
+    -- Extend line to right edge
+    if lastX and lastY then
+        DrawLine(lastX, lastY, CHART_WIDTH + 1, lastY, lineColor)
+    end
+end
+
 -- Chart: Update and redraw chart
 function GoldTracker:UpdateChart()
     if not chartFrame then return end
@@ -1463,6 +1720,13 @@ function GoldTracker:UpdateChart()
     end
 
     local history = GetFilteredHistory()
+
+    -- Delegate to rate chart if in rate mode
+    if chartMode == "rate" then
+        GoldTracker:UpdateRateChart(history)
+        return
+    end
+
     local count = table.getn(history)
 
     -- Always update stats first
@@ -1790,9 +2054,11 @@ SwitchTab = function(tabKey)
         if tabKey == "chart" then
             chartFrame:Show()
             if statsFrame then statsFrame:Show() end
+            if mainFrame and mainFrame.chartModeToggle then mainFrame.chartModeToggle:Show() end
         else
             chartFrame:Hide()
             if statsFrame then statsFrame:Hide() end
+            if mainFrame and mainFrame.chartModeToggle then mainFrame.chartModeToggle:Hide() end
         end
     end
 
@@ -2708,6 +2974,107 @@ local function CreateStatisticsFrame()
     end
 end
 
+-- UI: Create chart mode toggle (separated to avoid upvalue limit)
+function GoldTracker:CreateChartModeToggle()
+    local toggle = CreateFrame("Frame", nil, mainFrame)
+    toggle:SetPoint("TOPLEFT", mainFrame, "TOPLEFT", CHART_PADDING_LEFT, -49)
+    toggle:SetWidth(130)
+    toggle:SetHeight(16)
+
+    local function CreateModeButton(parent, text, mode, xOffset)
+        local btn = CreateFrame("Button", nil, parent)
+        btn:SetWidth(63)
+        btn:SetHeight(16)
+        btn:SetPoint("LEFT", parent, "LEFT", xOffset, 0)
+
+        btn.bg = btn:CreateTexture(nil, "BACKGROUND")
+        btn.bg:SetTexture("Interface\\Buttons\\WHITE8X8")
+        btn.bg:SetAllPoints()
+
+        btn.border = {}
+        btn.border[1] = btn:CreateTexture(nil, "BORDER")
+        btn.border[1]:SetTexture("Interface\\Buttons\\WHITE8X8")
+        btn.border[1]:SetHeight(1)
+        btn.border[1]:SetPoint("TOPLEFT", btn, "TOPLEFT", 0, 0)
+        btn.border[1]:SetPoint("TOPRIGHT", btn, "TOPRIGHT", 0, 0)
+
+        btn.border[2] = btn:CreateTexture(nil, "BORDER")
+        btn.border[2]:SetTexture("Interface\\Buttons\\WHITE8X8")
+        btn.border[2]:SetHeight(1)
+        btn.border[2]:SetPoint("BOTTOMLEFT", btn, "BOTTOMLEFT", 0, 0)
+        btn.border[2]:SetPoint("BOTTOMRIGHT", btn, "BOTTOMRIGHT", 0, 0)
+
+        btn.border[3] = btn:CreateTexture(nil, "BORDER")
+        btn.border[3]:SetTexture("Interface\\Buttons\\WHITE8X8")
+        btn.border[3]:SetWidth(1)
+        btn.border[3]:SetPoint("TOPLEFT", btn, "TOPLEFT", 0, 0)
+        btn.border[3]:SetPoint("BOTTOMLEFT", btn, "BOTTOMLEFT", 0, 0)
+
+        btn.border[4] = btn:CreateTexture(nil, "BORDER")
+        btn.border[4]:SetTexture("Interface\\Buttons\\WHITE8X8")
+        btn.border[4]:SetWidth(1)
+        btn.border[4]:SetPoint("TOPRIGHT", btn, "TOPRIGHT", 0, 0)
+        btn.border[4]:SetPoint("BOTTOMRIGHT", btn, "BOTTOMRIGHT", 0, 0)
+
+        btn.text = btn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        btn.text:SetPoint("CENTER", btn, "CENTER", 0, 0)
+        btn.text:SetText(text)
+
+        btn.SetActive = function(self, active)
+            if active then
+                self.bg:SetVertexColor(COLORS.border[1], COLORS.border[2], COLORS.border[3], 0.3)
+                for i = 1, 4 do
+                    self.border[i]:SetVertexColor(COLORS.border[1], COLORS.border[2], COLORS.border[3], 0.8)
+                end
+                self.text:SetTextColor(1, 0.843, 0, 1)
+            else
+                self.bg:SetVertexColor(0.08, 0.08, 0.08, 0.8)
+                for i = 1, 4 do
+                    self.border[i]:SetVertexColor(0.3, 0.3, 0.3, 0.6)
+                end
+                self.text:SetTextColor(0.5, 0.5, 0.5, 1)
+            end
+        end
+
+        return btn
+    end
+
+    local balanceBtn = CreateModeButton(toggle, "Balance", "balance", 0)
+    local rateBtn = CreateModeButton(toggle, "Rate", "rate", 65)
+
+    -- Rolling window label (shown only in rate mode)
+    local windowLabel = toggle:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    windowLabel:SetPoint("LEFT", toggle, "RIGHT", 8, 0)
+    windowLabel:SetTextColor(0.45, 0.45, 0.45, 1)
+    windowLabel:Hide()
+
+    toggle.UpdateWindowLabel = function()
+        if chartMode == "rate" then
+            local label = RATE_WINDOW_LABELS[currentRange] or "1 hour"
+            windowLabel:SetText("Rolling window: " .. label)
+            windowLabel:Show()
+        else
+            windowLabel:Hide()
+        end
+    end
+
+    local function SetChartMode(mode)
+        chartMode = mode
+        balanceBtn:SetActive(mode == "balance")
+        rateBtn:SetActive(mode == "rate")
+        toggle.UpdateWindowLabel()
+        GoldTracker:UpdateChart()
+    end
+
+    balanceBtn:SetScript("OnClick", function() SetChartMode("balance") end)
+    rateBtn:SetScript("OnClick", function() SetChartMode("rate") end)
+
+    balanceBtn:SetActive(true)
+    rateBtn:SetActive(false)
+
+    mainFrame.chartModeToggle = toggle
+end
+
 -- UI: Create main frame
 local function CreateMainFrame()
     if mainFrame then return mainFrame end
@@ -2839,6 +3206,9 @@ local function CreateMainFrame()
                     data.selectedRange = rangeKey
                 end
                 GoldTracker:UpdateChart()
+                if mainFrame and mainFrame.chartModeToggle and mainFrame.chartModeToggle.UpdateWindowLabel then
+                    mainFrame.chartModeToggle.UpdateWindowLabel()
+                end
                 if miniViewMode == "transactions" then
                     GoldTracker:UpdateMiniTransactions()
                 else
@@ -2895,6 +3265,9 @@ local function CreateMainFrame()
     tabButtons.chart:SetActive(true)
     tabButtons.transactions:SetActive(false)
     tabButtons.statistics:SetActive(false)
+
+    -- Chart mode toggle (separated to avoid upvalue limit)
+    GoldTracker:CreateChartModeToggle()
 
     -- Chart frame (inner area for chart)
     chartFrame = CreateFrame("Frame", nil, mainFrame)
@@ -2969,7 +3342,12 @@ local function CreateMainFrame()
             -- Show tooltip
             GameTooltip:SetOwner(this, "ANCHOR_CURSOR")
             GameTooltip:ClearLines()
-            GameTooltip:AddLine(FormatGold(nearestPoint.gold), COLORS.gold[1], COLORS.gold[2], COLORS.gold[3])
+            if nearestPoint.rate then
+                local rateColor = nearestPoint.rate >= 0 and COLORS.positive or COLORS.negative
+                GameTooltip:AddLine(FormatGold(math.floor(nearestPoint.rate)) .. "/hr", rateColor[1], rateColor[2], rateColor[3])
+            else
+                GameTooltip:AddLine(FormatGold(nearestPoint.gold), COLORS.gold[1], COLORS.gold[2], COLORS.gold[3])
+            end
             GameTooltip:AddLine(FormatTooltipTime(nearestPoint.timestamp), 0.7, 0.7, 0.7)
             GameTooltip:Show()
         else
