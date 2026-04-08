@@ -58,6 +58,12 @@ local CHART_WIDTH = FRAME_WIDTH - CHART_PADDING_LEFT - CHART_PADDING_RIGHT
 local CHART_HEIGHT = FRAME_HEIGHT - CHART_TOP_OFFSET - CHART_BOTTOM_OFFSET
 local TAB_BAR_HEIGHT = 22
 
+-- Compact storage indices (saves ~6x space vs named keys)
+-- History entry: {timestamp, gold}
+local H_TS = 1; local H_G = 2
+-- Transaction entry: {timestamp, amount, source, balance, detail}
+local TX_TS = 1; local TX_AMT = 2; local TX_SRC = 3; local TX_BAL = 4; local TX_DET = 5
+
 local COLORS = {
     background = {0, 0, 0, 0.92},
     border = {0.831, 0.627, 0.090, 0.8},  -- #D4A017
@@ -301,27 +307,9 @@ local function InitCharacterData()
         }
     end
 
-    -- Migrate historical data to transactions if needed
     local data = GoldTrackerDB[key]
     if not data.transactions then
         data.transactions = {}
-        -- Generate transactions from history deltas
-        local history = data.history
-        if history and table.getn(history) > 1 then
-            for i = 2, table.getn(history) do
-                local prev = history[i - 1]
-                local curr = history[i]
-                local delta = curr.gold - prev.gold
-                if delta ~= 0 then
-                    table.insert(data.transactions, {
-                        timestamp = curr.timestamp,
-                        amount = delta,
-                        source = "historical",
-                        balance = curr.gold,
-                    })
-                end
-            end
-        end
     end
 
     return data
@@ -338,13 +326,7 @@ local function RecordTransaction(amount, source, detail)
 
     local balance = GetMoney()
 
-    table.insert(data.transactions, {
-        timestamp = time(),
-        amount = amount,
-        source = source or "unknown",
-        detail = detail,
-        balance = balance,
-    })
+    table.insert(data.transactions, {time(), amount, source or "unknown", balance, detail})
 end
 
 -- Data: Record gold data point
@@ -371,10 +353,7 @@ local function RecordGold()
 
     lastGold = currentGold
 
-    table.insert(data.history, {
-        timestamp = time(),
-        gold = currentGold,
-    })
+    table.insert(data.history, {time(), currentGold})
 
     -- Update chart if visible
     if mainFrame and mainFrame:IsVisible() then
@@ -423,7 +402,7 @@ local function GetFilteredHistory()
 
     local filtered = {}
     for i, entry in ipairs(history) do
-        if entry.timestamp >= cutoff then
+        if entry[H_TS] >= cutoff then
             table.insert(filtered, entry)
         end
     end
@@ -441,19 +420,19 @@ local function ComputeRateData(history)
 
     for i = 1, count do
         local current = history[i]
-        local windowStart = current.timestamp - windowSize
+        local windowStart = current[H_TS] - windowSize
         local startGold = nil
         local startTime = nil
 
         -- Walk backward to find the point just before or at the window boundary
         for j = i, 1, -1 do
-            if history[j].timestamp <= windowStart then
+            if history[j][H_TS] <= windowStart then
                 -- Interpolate between this point and the next to get exact window boundary value
                 if j < i then
-                    local t0 = history[j].timestamp
-                    local t1 = history[j + 1].timestamp
-                    local g0 = history[j].gold
-                    local g1 = history[j + 1].gold
+                    local t0 = history[j][H_TS]
+                    local t1 = history[j + 1][H_TS]
+                    local g0 = history[j][H_G]
+                    local g1 = history[j + 1][H_G]
                     if t1 > t0 then
                         local frac = (windowStart - t0) / (t1 - t0)
                         startGold = g0 + (g1 - g0) * frac
@@ -461,7 +440,7 @@ local function ComputeRateData(history)
                         startGold = g0
                     end
                 else
-                    startGold = history[j].gold
+                    startGold = history[j][H_G]
                 end
                 startTime = windowStart
                 break
@@ -470,21 +449,21 @@ local function ComputeRateData(history)
 
         -- If no point before window start, use earliest point if >= 25% window covered
         if not startGold then
-            local elapsed = current.timestamp - history[1].timestamp
+            local elapsed = current[H_TS] - history[1][H_TS]
             if elapsed >= windowSize * 0.25 then
-                startGold = history[1].gold
-                startTime = history[1].timestamp
+                startGold = history[1][H_G]
+                startTime = history[1][H_TS]
             end
         end
 
         if startGold and startTime then
-            local elapsed = current.timestamp - startTime
+            local elapsed = current[H_TS] - startTime
             if elapsed > 0 then
-                local goldChange = current.gold - startGold
+                local goldChange = current[H_G] - startGold
                 local hoursElapsed = elapsed / 3600
                 local rate = goldChange / hoursElapsed  -- copper per hour
                 table.insert(rateData, {
-                    timestamp = current.timestamp,
+                    timestamp = current[H_TS],
                     rate = rate,
                 })
             end
@@ -527,27 +506,27 @@ function GoldTracker:GetFilteredTransactions()
     local filtered = {}
     for i = table.getn(data.transactions), 1, -1 do  -- Reverse order (newest first)
         local tx = data.transactions[i]
-        if tx.timestamp >= cutoff and activeFilters[tx.source] then
+        if tx[TX_TS] >= cutoff and activeFilters[tx[TX_SRC]] then
             -- Apply detail filter if set
             local passesDetail = true
             if detailFilter then
-                passesDetail = tx.detail and tx.detail == detailFilter
+                passesDetail = tx[TX_DET] and tx[TX_DET] == detailFilter
             end
 
             -- Apply free-text search filter
             local passesSearch = true
             if lowerSearch then
-                local matchDetail = tx.detail and string.find(string.lower(tx.detail), lowerSearch, 1, true)
-                local matchSource = tx.source and string.find(string.lower(tx.source), lowerSearch, 1, true)
+                local matchDetail = tx[TX_DET] and string.find(string.lower(tx[TX_DET]), lowerSearch, 1, true)
+                local matchSource = tx[TX_SRC] and string.find(string.lower(tx[TX_SRC]), lowerSearch, 1, true)
                 passesSearch = matchDetail or matchSource
             end
 
             -- Apply profit filter
             local passesProfitFilter = true
             if profitFilter == "positive" then
-                passesProfitFilter = tx.amount > 0
+                passesProfitFilter = tx[TX_AMT] > 0
             elseif profitFilter == "negative" then
-                passesProfitFilter = tx.amount < 0
+                passesProfitFilter = tx[TX_AMT] < 0
             end
 
             if passesDetail and passesSearch and passesProfitFilter then
@@ -643,62 +622,62 @@ function GoldTracker:CalculateStatistics()
 
     -- Process all transactions within time range (exclude historical synthetic data)
     for i, tx in ipairs(data.transactions) do
-        if tx.timestamp >= cutoff and tx.source ~= "historical" then
+        if tx[TX_TS] >= cutoff and tx[TX_SRC] ~= "historical" then
             -- Track peak gold
-            if tx.balance and tx.balance > stats.peakGold then
-                stats.peakGold = tx.balance
-                stats.peakGoldTimestamp = tx.timestamp
+            if tx[TX_BAL] and tx[TX_BAL] > stats.peakGold then
+                stats.peakGold = tx[TX_BAL]
+                stats.peakGoldTimestamp = tx[TX_TS]
             end
 
             -- Total income/expenses
-            if tx.amount > 0 then
-                stats.totalIn = stats.totalIn + tx.amount
+            if tx[TX_AMT] > 0 then
+                stats.totalIn = stats.totalIn + tx[TX_AMT]
                 stats.totalInCount = stats.totalInCount + 1
-                if stats.incomeBySource[tx.source] then
-                    stats.incomeBySource[tx.source] = stats.incomeBySource[tx.source] + tx.amount
+                if stats.incomeBySource[tx[TX_SRC]] then
+                    stats.incomeBySource[tx[TX_SRC]] = stats.incomeBySource[tx[TX_SRC]] + tx[TX_AMT]
                 end
             else
-                stats.totalOut = stats.totalOut + tx.amount
+                stats.totalOut = stats.totalOut + tx[TX_AMT]
                 stats.totalOutCount = stats.totalOutCount + 1
-                if stats.expenseBySource[tx.source] then
-                    stats.expenseBySource[tx.source] = stats.expenseBySource[tx.source] + math.abs(tx.amount)
+                if stats.expenseBySource[tx[TX_SRC]] then
+                    stats.expenseBySource[tx[TX_SRC]] = stats.expenseBySource[tx[TX_SRC]] + math.abs(tx[TX_AMT])
                 end
             end
 
             -- Time patterns
-            local d = date("*t", tx.timestamp)
+            local d = date("*t", tx[TX_TS])
             local dow = d.wday  -- 1=Sunday, 7=Saturday
             local hour = d.hour
 
-            stats.byDayOfWeek[dow].total = stats.byDayOfWeek[dow].total + tx.amount
+            stats.byDayOfWeek[dow].total = stats.byDayOfWeek[dow].total + tx[TX_AMT]
             stats.byDayOfWeek[dow].count = stats.byDayOfWeek[dow].count + 1
 
-            stats.byHourOfDay[hour].total = stats.byHourOfDay[hour].total + tx.amount
+            stats.byHourOfDay[hour].total = stats.byHourOfDay[hour].total + tx[TX_AMT]
             stats.byHourOfDay[hour].count = stats.byHourOfDay[hour].count + 1
 
             -- Trade partner aggregation
-            if tx.source == "trade" and tx.detail and tx.detail ~= "" then
-                if not tradePartnerData[tx.detail] then
-                    tradePartnerData[tx.detail] = {name = tx.detail, count = 0, received = 0, sent = 0}
+            if tx[TX_SRC] == "trade" and tx[TX_DET] and tx[TX_DET] ~= "" then
+                if not tradePartnerData[tx[TX_DET]] then
+                    tradePartnerData[tx[TX_DET]] = {name = tx[TX_DET], count = 0, received = 0, sent = 0}
                 end
-                tradePartnerData[tx.detail].count = tradePartnerData[tx.detail].count + 1
-                if tx.amount > 0 then
-                    tradePartnerData[tx.detail].received = tradePartnerData[tx.detail].received + tx.amount
+                tradePartnerData[tx[TX_DET]].count = tradePartnerData[tx[TX_DET]].count + 1
+                if tx[TX_AMT] > 0 then
+                    tradePartnerData[tx[TX_DET]].received = tradePartnerData[tx[TX_DET]].received + tx[TX_AMT]
                 else
-                    tradePartnerData[tx.detail].sent = tradePartnerData[tx.detail].sent + math.abs(tx.amount)
+                    tradePartnerData[tx[TX_DET]].sent = tradePartnerData[tx[TX_DET]].sent + math.abs(tx[TX_AMT])
                 end
             end
 
             -- Auction item aggregation
-            if tx.source == "auction" and tx.detail and tx.detail ~= "" then
-                if not auctionItemData[tx.detail] then
-                    auctionItemData[tx.detail] = {name = tx.detail, count = 0, income = 0, expense = 0}
+            if tx[TX_SRC] == "auction" and tx[TX_DET] and tx[TX_DET] ~= "" then
+                if not auctionItemData[tx[TX_DET]] then
+                    auctionItemData[tx[TX_DET]] = {name = tx[TX_DET], count = 0, income = 0, expense = 0}
                 end
-                auctionItemData[tx.detail].count = auctionItemData[tx.detail].count + 1
-                if tx.amount > 0 then
-                    auctionItemData[tx.detail].income = auctionItemData[tx.detail].income + tx.amount
+                auctionItemData[tx[TX_DET]].count = auctionItemData[tx[TX_DET]].count + 1
+                if tx[TX_AMT] > 0 then
+                    auctionItemData[tx[TX_DET]].income = auctionItemData[tx[TX_DET]].income + tx[TX_AMT]
                 else
-                    auctionItemData[tx.detail].expense = auctionItemData[tx.detail].expense + math.abs(tx.amount)
+                    auctionItemData[tx[TX_DET]].expense = auctionItemData[tx[TX_DET]].expense + math.abs(tx[TX_AMT])
                 end
             end
         end
@@ -1331,11 +1310,11 @@ function GoldTracker:UpdateTransactionList()
             local tx = filtered[txIdx]
 
             -- Time
-            row.time:SetText(FormatTableTime(tx.timestamp))
+            row.time:SetText(FormatTableTime(tx[TX_TS]))
 
             -- Amount (colored)
-            local amountStr = FormatGold(math.abs(tx.amount))
-            if tx.amount >= 0 then
+            local amountStr = FormatGold(math.abs(tx[TX_AMT]))
+            if tx[TX_AMT] >= 0 then
                 row.amount:SetText("+" .. amountStr)
                 row.amount:SetTextColor(COLORS.positive[1], COLORS.positive[2], COLORS.positive[3], 1)
             else
@@ -1344,12 +1323,12 @@ function GoldTracker:UpdateTransactionList()
             end
 
             -- Source (capitalize first letter)
-            local sourceText = tx.source
+            local sourceText = tx[TX_SRC]
             sourceText = string.upper(string.sub(sourceText, 1, 1)) .. string.sub(sourceText, 2)
             row.source:SetText(sourceText)
 
             -- Detail (NPC name, player name, quest name, etc.) - truncate for display
-            local detailText = tx.detail or ""
+            local detailText = tx[TX_DET] or ""
             row.detailFull = detailText
             if string.len(detailText) > 18 then
                 detailText = string.sub(detailText, 1, 16) .. ".."
@@ -1357,8 +1336,8 @@ function GoldTracker:UpdateTransactionList()
             row.detail:SetText(detailText)
 
             -- Balance (show gold and silver)
-            local balGold = math.floor(tx.balance / 10000)
-            local balSilver = math.floor(math.mod(tx.balance, 10000) / 100)
+            local balGold = math.floor(tx[TX_BAL] / 10000)
+            local balSilver = math.floor(math.mod(tx[TX_BAL], 10000) / 100)
             row.balance:SetText(balGold .. "g " .. balSilver .. "s")
             row.balance:SetTextColor(COLORS.gold[1], COLORS.gold[2], COLORS.gold[3], 1)
 
@@ -1741,7 +1720,7 @@ function GoldTracker:UpdateChart()
         -- Show Y-axis labels based on current gold with nice intervals
         local baseGold = currentGold
         if count == 1 then
-            baseGold = history[1].gold
+            baseGold = history[1][H_G]
         end
         local padding = math.max(baseGold * 0.1, 10000) -- At least 1g padding
         local gridCount = 4
@@ -1782,14 +1761,14 @@ function GoldTracker:UpdateChart()
     end
 
     -- Find min/max for scaling
-    local minGold = history[1].gold
-    local maxGold = history[1].gold
-    local minTime = history[1].timestamp
-    local maxTime = history[count].timestamp
+    local minGold = history[1][H_G]
+    local maxGold = history[1][H_G]
+    local minTime = history[1][H_TS]
+    local maxTime = history[count][H_TS]
 
     for i, entry in ipairs(history) do
-        if entry.gold < minGold then minGold = entry.gold end
-        if entry.gold > maxGold then maxGold = entry.gold end
+        if entry[H_G] < minGold then minGold = entry[H_G] end
+        if entry[H_G] > maxGold then maxGold = entry[H_G] end
     end
 
     -- Calculate nice Y-axis bounds with clean intervals
@@ -1838,8 +1817,8 @@ function GoldTracker:UpdateChart()
     -- First pass: Draw the filled area (step-style for accurate representation)
     for i = 1, count, step do
         local entry = history[i]
-        local x = ((entry.timestamp - minTime) / timeRange) * CHART_WIDTH
-        local y = ((entry.gold - minGold) / goldRange) * CHART_HEIGHT
+        local x = ((entry[H_TS] - minTime) / timeRange) * CHART_WIDTH
+        local y = ((entry[H_G] - minGold) / goldRange) * CHART_HEIGHT
 
         if lastX and lastY then
             DrawFilledArea(lastX, lastY, x, y)
@@ -1850,8 +1829,8 @@ function GoldTracker:UpdateChart()
     -- Handle last point for fill (ensure we reach the right edge)
     if count > 0 then
         local entry = history[count]
-        local x = ((entry.timestamp - minTime) / timeRange) * CHART_WIDTH
-        local y = ((entry.gold - minGold) / goldRange) * CHART_HEIGHT
+        local x = ((entry[H_TS] - minTime) / timeRange) * CHART_WIDTH
+        local y = ((entry[H_G] - minGold) / goldRange) * CHART_HEIGHT
         if lastX and lastY and x > lastX then
             DrawFilledArea(lastX, lastY, x, y)
         end
@@ -1865,16 +1844,16 @@ function GoldTracker:UpdateChart()
     lastX, lastY = nil, nil
     for i = 1, count, step do
         local entry = history[i]
-        local x = ((entry.timestamp - minTime) / timeRange) * CHART_WIDTH
-        local y = ((entry.gold - minGold) / goldRange) * CHART_HEIGHT
+        local x = ((entry[H_TS] - minTime) / timeRange) * CHART_WIDTH
+        local y = ((entry[H_G] - minGold) / goldRange) * CHART_HEIGHT
 
         -- Store data point for hover detection
         dataPointIndex = dataPointIndex + 1
         chartDataPoints[dataPointIndex] = {
             x = x,
             y = y,
-            gold = entry.gold,
-            timestamp = entry.timestamp
+            gold = entry[H_G],
+            timestamp = entry[H_TS]
         }
 
         if lastX and lastY then
@@ -1886,16 +1865,16 @@ function GoldTracker:UpdateChart()
     -- Make sure we include the last point
     if step > 1 and count > 0 then
         local entry = history[count]
-        local x = ((entry.timestamp - minTime) / timeRange) * CHART_WIDTH
-        local y = ((entry.gold - minGold) / goldRange) * CHART_HEIGHT
+        local x = ((entry[H_TS] - minTime) / timeRange) * CHART_WIDTH
+        local y = ((entry[H_G] - minGold) / goldRange) * CHART_HEIGHT
 
         -- Store the last data point for hover detection
         dataPointIndex = dataPointIndex + 1
         chartDataPoints[dataPointIndex] = {
             x = x,
             y = y,
-            gold = entry.gold,
-            timestamp = entry.timestamp
+            gold = entry[H_G],
+            timestamp = entry[H_TS]
         }
 
         if lastX and lastY then
@@ -1920,7 +1899,7 @@ function GoldTracker:UpdateStats(history)
     -- Calculate net change
     local netChange = 0
     if count > 0 then
-        netChange = currentGold - history[1].gold
+        netChange = currentGold - history[1][H_G]
     end
 
     -- Calculate session change
@@ -3803,7 +3782,7 @@ function GoldTracker:UpdateMiniChart()
     local currentGold = GetMoney()
     local netChange = 0
     if count > 0 then
-        netChange = currentGold - history[1].gold
+        netChange = currentGold - history[1][H_G]
     end
     local netGold = math.floor(math.abs(netChange) / 10000)
     local netSilver = math.floor(math.mod(math.abs(netChange), 10000) / 100)
@@ -3822,12 +3801,12 @@ function GoldTracker:UpdateMiniChart()
     if count < 2 then return end
 
     -- Calculate bounds
-    local minGold, maxGold = history[1].gold, history[1].gold
-    local minTime, maxTime = history[1].timestamp, history[count].timestamp
+    local minGold, maxGold = history[1][H_G], history[1][H_G]
+    local minTime, maxTime = history[1][H_TS], history[count][H_TS]
 
     for i, entry in ipairs(history) do
-        if entry.gold < minGold then minGold = entry.gold end
-        if entry.gold > maxGold then maxGold = entry.gold end
+        if entry[H_G] < minGold then minGold = entry[H_G] end
+        if entry[H_G] > maxGold then maxGold = entry[H_G] end
     end
 
     local goldRange = maxGold - minGold
@@ -3854,8 +3833,8 @@ function GoldTracker:UpdateMiniChart()
     -- First pass: draw fill
     for i = 1, count, step do
         local entry = history[i]
-        local x = ((entry.timestamp - minTime) / timeRange) * chartWidth
-        local y = ((entry.gold - minGold) / goldRange) * chartHeight
+        local x = ((entry[H_TS] - minTime) / timeRange) * chartWidth
+        local y = ((entry[H_G] - minGold) / goldRange) * chartHeight
 
         if lastX then
             DrawMiniFillArea(lastX, lastY, x, y)
@@ -3867,8 +3846,8 @@ function GoldTracker:UpdateMiniChart()
     -- Ensure last point is included for fill
     if step > 1 and count > 0 then
         local entry = history[count]
-        local x = ((entry.timestamp - minTime) / timeRange) * chartWidth
-        local y = ((entry.gold - minGold) / goldRange) * chartHeight
+        local x = ((entry[H_TS] - minTime) / timeRange) * chartWidth
+        local y = ((entry[H_G] - minGold) / goldRange) * chartHeight
         if lastX and lastY and x > lastX then
             DrawMiniFillArea(lastX, lastY, x, y)
         end
@@ -3884,8 +3863,8 @@ function GoldTracker:UpdateMiniChart()
     lastX, lastY = nil, nil
     for i = 1, count, step do
         local entry = history[i]
-        local x = ((entry.timestamp - minTime) / timeRange) * chartWidth
-        local y = ((entry.gold - minGold) / goldRange) * chartHeight
+        local x = ((entry[H_TS] - minTime) / timeRange) * chartWidth
+        local y = ((entry[H_G] - minGold) / goldRange) * chartHeight
 
         if lastX then
             DrawMiniLine(lastX, lastY, x, y)
@@ -3897,8 +3876,8 @@ function GoldTracker:UpdateMiniChart()
     -- Ensure last point is included for line
     if step > 1 and count > 0 then
         local entry = history[count]
-        local x = ((entry.timestamp - minTime) / timeRange) * chartWidth
-        local y = ((entry.gold - minGold) / goldRange) * chartHeight
+        local x = ((entry[H_TS] - minTime) / timeRange) * chartWidth
+        local y = ((entry[H_G] - minGold) / goldRange) * chartHeight
         if lastX and lastY then
             DrawMiniLine(lastX, lastY, x, y)
         end
@@ -3941,7 +3920,7 @@ function GoldTracker:UpdateMiniTransactions()
         local currentGold = GetMoney()
         local netChange = 0
         if histCount > 0 then
-            netChange = currentGold - history[1].gold
+            netChange = currentGold - history[1][H_G]
         end
         local netGold = math.floor(math.abs(netChange) / 10000)
         local netSilver = math.floor(math.mod(math.abs(netChange), 10000) / 100)
@@ -3965,12 +3944,12 @@ function GoldTracker:UpdateMiniTransactions()
             local tx = transactions[i]
 
             -- Time (compact format)
-            row.time:SetText(FormatMiniTime(tx.timestamp))
+            row.time:SetText(FormatMiniTime(tx[TX_TS]))
 
             -- Detail - show source or detail if available
-            local detailText = tx.detail or ""
+            local detailText = tx[TX_DET] or ""
             if detailText == "" then
-                detailText = tx.source or ""
+                detailText = tx[TX_SRC] or ""
                 detailText = string.upper(string.sub(detailText, 1, 1)) .. string.sub(detailText, 2)
             end
             -- Store full text for tooltip
@@ -3982,11 +3961,11 @@ function GoldTracker:UpdateMiniTransactions()
             row.detail:SetText(detailText)
 
             -- Amount (compact: gold, silver, or copper)
-            local absAmount = math.abs(tx.amount)
+            local absAmount = math.abs(tx[TX_AMT])
             local gold = math.floor(absAmount / 10000)
             local silver = math.floor(math.mod(absAmount, 10000) / 100)
             local copper = math.mod(absAmount, 100)
-            local sign = tx.amount >= 0 and "+" or "-"
+            local sign = tx[TX_AMT] >= 0 and "+" or "-"
             local amountText
             if gold > 0 then
                 amountText = sign .. gold .. "g"
@@ -3998,7 +3977,7 @@ function GoldTracker:UpdateMiniTransactions()
             row.amount:SetText(amountText)
 
             -- Color based on gain/loss
-            if tx.amount >= 0 then
+            if tx[TX_AMT] >= 0 then
                 row.amount:SetTextColor(COLORS.positive[1], COLORS.positive[2], COLORS.positive[3], 1)
             else
                 row.amount:SetTextColor(COLORS.negative[1], COLORS.negative[2], COLORS.negative[3], 1)
@@ -4188,12 +4167,62 @@ GoldTracker:RegisterEvent("TRAINER_CLOSED")
 GoldTracker:RegisterEvent("QUEST_COMPLETE")
 GoldTracker:RegisterEvent("CHAT_MSG_MONEY")
 
+-- Migration: convert old named-key history/transaction entries to compact positional format
+local function MigrateAllToCompact()
+    if not GoldTrackerDB then return end
+    for key, data in pairs(GoldTrackerDB) do
+        if type(data) == "table" then
+            -- Migrate history (named-key → positional)
+            if data.history and table.getn(data.history) > 0 then
+                local first = data.history[1]
+                if first.gold ~= nil then
+                    local newHist = {}
+                    for i = 1, table.getn(data.history) do
+                        local h = data.history[i]
+                        table.insert(newHist, {h.timestamp, h.gold})
+                    end
+                    data.history = newHist
+                end
+            end
+
+            -- Generate transactions from history if missing (pre-transaction addon version)
+            if not data.transactions then
+                data.transactions = {}
+                if data.history and table.getn(data.history) > 1 then
+                    for i = 2, table.getn(data.history) do
+                        local prev = data.history[i - 1]
+                        local curr = data.history[i]
+                        local delta = curr[H_G] - prev[H_G]
+                        if delta ~= 0 then
+                            table.insert(data.transactions, {curr[H_TS], delta, "historical", curr[H_G]})
+                        end
+                    end
+                end
+            end
+
+            -- Migrate transactions (named-key → positional)
+            if data.transactions and table.getn(data.transactions) > 0 then
+                local first = data.transactions[1]
+                if first.timestamp ~= nil then
+                    local newTx = {}
+                    for i = 1, table.getn(data.transactions) do
+                        local tx = data.transactions[i]
+                        table.insert(newTx, {tx.timestamp, tx.amount, tx.source, tx.balance, tx.detail})
+                    end
+                    data.transactions = newTx
+                end
+            end
+        end
+    end
+end
+
 GoldTracker:SetScript("OnEvent", function()
     if event == "VARIABLES_LOADED" then
         -- Initialize SavedVariables
         if not GoldTrackerDB then
             GoldTrackerDB = {}
         end
+        MigrateAllToCompact()
         dbReady = true
 
         -- Initialize active filters (all enabled by default)
